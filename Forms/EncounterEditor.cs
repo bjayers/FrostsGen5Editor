@@ -285,6 +285,14 @@ namespace NewEditor.Forms
             importPlannerJsonButton.UseVisualStyleBackColor = true;
             importPlannerJsonButton.Click += ImportPlannerJsonButton_Click;
             Controls.Add(importPlannerJsonButton);
+
+            var exportPlannerJsonButton = new Button();
+            exportPlannerJsonButton.Location = new System.Drawing.Point(550, 10);
+            exportPlannerJsonButton.Size = new System.Drawing.Size(170, 28);
+            exportPlannerJsonButton.Text = "Export ROM to JSON...";
+            exportPlannerJsonButton.UseVisualStyleBackColor = true;
+            exportPlannerJsonButton.Click += ExportPlannerJsonButton_Click;
+            Controls.Add(exportPlannerJsonButton);
         }
 
         private void ImportPlannerJsonButton_Click(object sender, EventArgs e)
@@ -333,6 +341,25 @@ namespace NewEditor.Forms
                 catch (Exception ex)
                 {
                     MessageBox.Show("Import failed:\n" + ex.Message);
+                }
+            }
+        }
+
+        private void ExportPlannerJsonButton_Click(object sender, EventArgs e) {
+            if (MainEditor.RomType != RomType.BW2) {
+                MessageBox.Show("ROM JSON export currently supports Black 2 / White 2.");
+                return;
+            }
+            using (SaveFileDialog dlg = new SaveFileDialog()) {
+                dlg.Filter = "Planner JSON (*.json)|*.json";
+                dlg.FileName = "white-2-rom-encounters.json";
+                if (dlg.ShowDialog() != DialogResult.OK) return;
+                try {
+                    var result = PlannerEncounterImport.Export(encounterNarc);
+                    System.IO.File.WriteAllText(dlg.FileName, result.Json);
+                    MessageBox.Show("Wrote " + result.TablesWritten + " tables (" + result.SlotsWritten + " slots).");
+                } catch (Exception ex) {
+                    MessageBox.Show("Export failed:\n" + ex.Message);
                 }
             }
         }
