@@ -19,6 +19,19 @@ namespace NewEditor.Data
             { "spring", 0 }, { "summer", 1 }, { "autumn", 2 }, { "winter", 3 }
         };
 
+        static readonly string[] SeasonNames = { "spring", "summer", "autumn", "winter" };
+        static readonly int[] LandRates = { 20, 20, 10, 10, 10, 10, 5, 5, 4, 4, 1, 1 };
+        static readonly int[] SurfRates = { 60, 30, 5, 4, 1 };
+        static readonly int[] FishRates = { 40, 40, 15, 4, 1 };
+
+        struct SlotWrite
+        {
+            public short Species;
+            public int Form;
+            public byte MinLevel;
+            public byte MaxLevel;
+        }
+
         public class Result
         {
             public int TablesWritten;
@@ -27,6 +40,13 @@ namespace NewEditor.Data
             public List<string> UnmappedLocations = new List<string>();
             public List<string> MissingPools = new List<string>();
             public List<string> Warnings = new List<string>();
+        }
+
+        public class ExportResult
+        {
+            public string Json;
+            public int TablesWritten;
+            public int SlotsWritten;
         }
 
         public static Result Import(string jsonText, EncounterNARC narc)
@@ -54,7 +74,7 @@ namespace NewEditor.Data
 
                 var skippedTypeSet = new HashSet<string>();
                 var unmappedLoc = new HashSet<string>();
-                var tables = new Dictionary<string, Dictionary<int, short>>();
+                var tables = new Dictionary<string, Dictionary<int, SlotWrite>>();
 
                 if (!root.TryGetProperty("placements", out var placements))
                     throw new Exception("JSON has no placements array.");
@@ -72,6 +92,10 @@ namespace NewEditor.Data
                     string season = p.GetProperty("season").GetString();
                     int slot = p.GetProperty("slot").GetInt32();
                     int species = p.GetProperty("speciesId").GetInt32();
+                    int form = 0;
+                    if (p.TryGetProperty("form", out var formEl) && formEl.ValueKind == JsonValueKind.Number)
+                        form = formEl.GetInt32();
+                    if (form < 0) form = 0;
 
                     int nameId = -1;
                     if (p.TryGetProperty("tableIndex", out var idxEl) && idxEl.ValueKind == JsonValueKind.Number)
@@ -85,9 +109,28 @@ namespace NewEditor.Data
                         continue;
                     }
 
+                    string levelKey = locId + ":" + season + ":" + type;
+                    byte minLv = 1, maxLv = 1;
+                    if (levels.ContainsKey(levelKey))
+                    {
+                        minLv = levels[levelKey].Item1;
+                        maxLv = levels[levelKey].Item2;
+                    }
+                    if (p.TryGetProperty("minLevel", out var pMin) && pMin.ValueKind == JsonValueKind.Number)
+                        minLv = ClampLevel(pMin.GetInt32());
+                    if (p.TryGetProperty("maxLevel", out var pMax) && pMax.ValueKind == JsonValueKind.Number)
+                        maxLv = ClampLevel(pMax.GetInt32());
+                    if (maxLv < minLv) maxLv = minLv;
+
                     string key = nameId + "|" + season + "|" + type + "|" + locId;
-                    if (!tables.ContainsKey(key)) tables[key] = new Dictionary<int, short>();
-                    tables[key][slot] = (short)species;
+                    if (!tables.ContainsKey(key)) tables[key] = new Dictionary<int, SlotWrite>();
+                    tables[key][slot] = new SlotWrite
+                    {
+                        Species = (short)species,
+                        Form = form,
+                        MinLevel = minLv,
+                        MaxLevel = maxLv
+                    };
                 }
 
                 result.SkippedTypes = skippedTypeSet.OrderBy(s => s).ToList();
@@ -105,14 +148,6 @@ namespace NewEditor.Data
                     EncounterEntry entry = FindOrCreateSeasonEntry(narc, nameId, season, result);
                     if (entry == null) continue;
 
-                    string levelKey = locName + ":" + seasonName + ":" + type;
-                    byte minLv = 1, maxLv = 1;
-                    if (levels.ContainsKey(levelKey))
-                    {
-                        minLv = levels[levelKey].Item1;
-                        maxLv = levels[levelKey].Item2;
-                    }
-
                     bool land;
                     int destIndex;
                     if (!TryTableIndex(type, out land, out destIndex)) continue;
@@ -126,7 +161,8 @@ namespace NewEditor.Data
                             result.Warnings.Add(locName + " " + type + " slot " + slot + " out of range");
                             continue;
                         }
-                        dest[slot] = new EncounterSlot(slotKv.Value, 0, minLv, maxLv, dest[slot].rate);
+                        SlotWrite w = slotKv.Value;
+                        dest[slot] = new EncounterSlot(w.Species, w.Form, w.MinLevel, w.MaxLevel, dest[slot].rate);
                         result.SlotsWritten++;
                     }
 
@@ -137,6 +173,83 @@ namespace NewEditor.Data
             }
 
             return result;
+        }
+
+        public static ExportResult Export(EncounterNARC narc)
+        {
+            var result = new ExportResult();
+            var placements = new List<Dictionary<string, object>>();
+            var levels = new Dictionary<string, object>();
+            var linked = new Dictionary<string, bool>();
+            int placeId = 1;
+
+            var names = VersionConstants.BW2_RouteEncounterPoolNames;
+            var locationList = new List<Dictionary<string, object>>();
+            for (int i = 0; i < names.Count; i++)
+                locationList.Add(new Dictionary<string, object> { { "tableIndex", i }, { "name", names[i] } });
+
+            foreach (EncounterEntry main in narc.mainEncounterPools)
+            {
+                if (main.nameID < 0 || main.nameID >= names.Count) continue;
+                string locName = names[main.nameID];
+                bool seasonal = main.season != -1;
+                linked[locName] = !seasonal;
+
+                if (!seasonal)
+                {
+                    // One year-round table. Emit all four season labels from the SAME bytes
+                    // without duplicating via IndexOf (that always returned spring).
+                    for (int s = 0; s < 4; s++)
+                        WriteAllTypes(main, locName, main.nameID, SeasonNames[s], placements, levels, ref placeId, result);
+                }
+                else
+                {
+                    WriteAllTypes(main, locName, main.nameID, SeasonName(main.season), placements, levels, ref placeId, result);
+                    foreach (var sub in narc.subEncounterPools.Where(e => e.parentPool == main))
+                        WriteAllTypes(sub, locName, main.nameID, SeasonName(sub.season), placements, levels, ref placeId, result);
+                }
+            }
+
+            var root = new Dictionary<string, object>
+            {
+                { "version", 4 },
+                { "name", "White 2 ROM dump" },
+                { "savedAt", DateTime.UtcNow.ToString("o") },
+                { "source", "FrostsGen5Editor EncounterNARC dump v4" },
+                { "evolutionOnly", new int[0] },
+                { "staticOnly", new int[0] },
+                { "placements", placements },
+                { "levels", levels },
+                { "linkedSeasons", linked },
+                { "hiddenLocations", new string[0] },
+                { "notes", new Dictionary<string, string>
+                    {
+                        { "_export", "v4: per-slot minLevel/maxLevel and form. Year-round pools emit spring-winter from one table. Empty tables omitted." }
+                    }
+                },
+                { "locations", locationList }
+            };
+
+            result.Json = JsonSerializer.Serialize(root, new JsonSerializerOptions { WriteIndented = true });
+            return result;
+        }
+
+        static void WriteAllTypes(EncounterEntry entry, string locName, int nameId, string season,
+            List<Dictionary<string, object>> placements, Dictionary<string, object> levels, ref int placeId, ExportResult result)
+        {
+            WriteLand(entry, 0, WalkingType(locName), locName, nameId, season, placements, levels, ref placeId, result);
+            WriteLand(entry, 1, "darkGrass", locName, nameId, season, placements, levels, ref placeId, result);
+            WriteLand(entry, 2, "rustling", locName, nameId, season, placements, levels, ref placeId, result);
+            WriteWater(entry, 0, "surf", locName, nameId, season, placements, levels, ref placeId, result);
+            WriteWater(entry, 1, "ripples", locName, nameId, season, placements, levels, ref placeId, result);
+            WriteWater(entry, 2, "fishing", locName, nameId, season, placements, levels, ref placeId, result);
+            WriteWater(entry, 3, "fishRipples", locName, nameId, season, placements, levels, ref placeId, result);
+        }
+
+        static string SeasonName(int season)
+        {
+            if (season < 0 || season > 3) return "spring";
+            return SeasonNames[season];
         }
 
         static void WriteSlotsToBytes(EncounterEntry entry)
@@ -223,6 +336,111 @@ namespace NewEditor.Data
             if (v < 1) return 1;
             if (v > 100) return 100;
             return (byte)v;
+        }
+
+        static string WalkingType(string locName)
+        {
+            string n = locName.ToLowerInvariant();
+            string[] caveHints = {
+                "cave","castle","sewer","ruins","tower","passage","room","laboratory","house",
+                "wellspring","chargestone","twist","relic","clay","underground","guidance",
+                "celestial","strange","victory road "
+            };
+            foreach (string h in caveHints)
+                if (n.Contains(h)) return "cave";
+            if (n.StartsWith("victory road") && n != "victory road") return "cave";
+            return "grass";
+        }
+
+        static bool TableEmpty(EncounterSlot[] slots)
+        {
+            if (slots == null) return true;
+            for (int i = 0; i < slots.Length; i++)
+                if (slots[i] != null && slots[i].pokemonID > 0) return false;
+            return true;
+        }
+
+        static void WriteLand(EncounterEntry entry, int table, string type, string locName, int nameId, string season,
+            List<Dictionary<string, object>> placements, Dictionary<string, object> levels, ref int placeId, ExportResult result)
+        {
+            EncounterSlot[] slots = entry.landSlots[table];
+            if (TableEmpty(slots)) return;
+            int min = 100, max = 1;
+            for (int i = 0; i < slots.Length; i++)
+            {
+                var sl = slots[i];
+                int rate = sl.rate > 0 ? sl.rate : (i < LandRates.Length ? LandRates[i] : 0);
+                byte slotMin = sl.minLevel > 0 ? sl.minLevel : (byte)1;
+                byte slotMax = sl.maxLevel > 0 ? sl.maxLevel : slotMin;
+                if (slotMax < slotMin) slotMax = slotMin;
+                placements.Add(new Dictionary<string, object>
+                {
+                    { "id", "rom-" + placeId + "-" + season.Substring(0, 2) },
+                    { "speciesId", (int)sl.pokemonID },
+                    { "locationId", locName },
+                    { "tableIndex", nameId },
+                    { "season", season },
+                    { "type", type },
+                    { "slot", i },
+                    { "rate", rate },
+                    { "minLevel", (int)slotMin },
+                    { "maxLevel", (int)slotMax },
+                    { "form", sl.pokemonForm }
+                });
+                placeId++;
+                result.SlotsWritten++;
+                if (sl.pokemonID > 0)
+                {
+                    if (slotMin < min) min = slotMin;
+                    if (slotMax > max) max = slotMax;
+                }
+            }
+            if (min == 100) min = 1;
+            if (max < min) max = min;
+            levels[locName + ":" + season + ":" + type] = new Dictionary<string, int> { { "min", min }, { "max", max } };
+            result.TablesWritten++;
+        }
+
+        static void WriteWater(EncounterEntry entry, int table, string type, string locName, int nameId, string season,
+            List<Dictionary<string, object>> placements, Dictionary<string, object> levels, ref int placeId, ExportResult result)
+        {
+            EncounterSlot[] slots = entry.waterSlots[table];
+            if (TableEmpty(slots)) return;
+            int[] defaults = (type == "fishing" || type == "fishRipples") ? FishRates : SurfRates;
+            int min = 100, max = 1;
+            for (int i = 0; i < slots.Length; i++)
+            {
+                var sl = slots[i];
+                int rate = sl.rate > 0 ? sl.rate : (i < defaults.Length ? defaults[i] : 0);
+                byte slotMin = sl.minLevel > 0 ? sl.minLevel : (byte)1;
+                byte slotMax = sl.maxLevel > 0 ? sl.maxLevel : slotMin;
+                if (slotMax < slotMin) slotMax = slotMin;
+                placements.Add(new Dictionary<string, object>
+                {
+                    { "id", "rom-" + placeId + "-" + season.Substring(0, 2) },
+                    { "speciesId", (int)sl.pokemonID },
+                    { "locationId", locName },
+                    { "tableIndex", nameId },
+                    { "season", season },
+                    { "type", type },
+                    { "slot", i },
+                    { "rate", rate },
+                    { "minLevel", (int)slotMin },
+                    { "maxLevel", (int)slotMax },
+                    { "form", sl.pokemonForm }
+                });
+                placeId++;
+                result.SlotsWritten++;
+                if (sl.pokemonID > 0)
+                {
+                    if (slotMin < min) min = slotMin;
+                    if (slotMax > max) max = slotMax;
+                }
+            }
+            if (min == 100) min = 1;
+            if (max < min) max = min;
+            levels[locName + ":" + season + ":" + type] = new Dictionary<string, int> { { "min", min }, { "max", max } };
+            result.TablesWritten++;
         }
     }
 }
