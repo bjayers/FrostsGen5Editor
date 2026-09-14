@@ -1,3 +1,11 @@
+# What's included in my fork #
+
+This fork adds the ability to import and export a json file of the open rom's encounter tables from all locations, including all seasons, encounter types (grass, surf, etc.), levels, rates, and forms.  For use with an external editor to make planning encounter tables easier for hack designers.
+
+New features supported by AI (Grok 4.6); reviewed and revised manually by me.
+
+---
+
 # Frost's Gen 5 Editor #
 
 This is a general purpose editor made to handle all of the most important rom hacking features in a single user friendly package. It fully supports black 2 and white 2 roms and mostly supports black and white roms with a few features missing.
