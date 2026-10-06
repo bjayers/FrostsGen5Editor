@@ -20,6 +20,50 @@ namespace NewEditor.Forms
         MapMatrixNARC mapMatrixNarc => MainEditor.mapMatrixNarc;
         OverworldObjectsNARC overworldObjectNarc => MainEditor.overworldsNarc;
 
+        OverworldMapView mapView;
+        PictureBox spritePreview;
+        bool syncingNpc;
+
+        public ZoneDataEntry CurrentZone
+        {
+            get { return zoneIdDropdown.SelectedItem as ZoneDataEntry; }
+        }
+
+        public MapMatrixEntry CurrentMatrix
+        {
+            get
+            {
+                if (!(zoneIdDropdown.SelectedItem is ZoneDataEntry z)) return null;
+                int mx = z.matrix;
+                if (mapMatrixNarc == null || mx < 0 || mx >= mapMatrixNarc.matricies.Count) return null;
+                return mapMatrixNarc.matricies[mx];
+            }
+        }
+
+        public OverworldObjectsEntry CurrentObjects
+        {
+            get
+            {
+                int id = (int)mapIDNumberBox.Value;
+                if (overworldObjectNarc == null || id < 0 || id >= overworldObjectNarc.objects.Count) return null;
+                return overworldObjectNarc.objects[id];
+            }
+        }
+
+        public MapFilesNARC MapFiles
+        {
+            get { return MainEditor.mapFilesNarc; }
+        }
+
+        public int SelectedNpcIndex
+        {
+            get
+            {
+                if (CurrentObjects == null || CurrentObjects.NPCs == null || CurrentObjects.NPCs.Count == 0) return -1;
+                return (int)npcIDNumberBox.Value;
+            }
+        }
+
         public OverworldEditor()
         {
             InitializeComponent();
@@ -28,6 +72,219 @@ namespace NewEditor.Forms
             mapNameDropdown.Items.AddRange(textNARC.textFiles[VersionConstants.ZoneNameTextFileID].text.ToArray());
             setItemDropdown.Items.AddRange(textNARC.textFiles[VersionConstants.ItemNameTextFileID].text.ToArray());
             warpDestMapDropdown.Items.AddRange(zoneNARC.zones.ToArray());
+
+            AttachMapView();
+            AttachSpritePreview();
+        }
+
+        void AttachSpritePreview()
+        {
+            if (npcSpriteIDNumberBox == null) return;
+            spritePreview = new PictureBox
+            {
+                Size = new Size(64, 64),
+                SizeMode = PictureBoxSizeMode.Zoom,
+                BorderStyle = BorderStyle.FixedSingle,
+                BackColor = Color.FromArgb(18, 20, 24),
+                Location = new Point(npcSpriteIDNumberBox.Right + 10, npcSpriteIDNumberBox.Top - 20)
+            };
+            Control parent = npcSpriteIDNumberBox.Parent ?? this;
+            parent.Controls.Add(spritePreview);
+            spritePreview.BringToFront();
+
+            var up = new Button
+            {
+                Text = "▲",
+                Size = new Size(22, 20),
+                Location = new Point(spritePreview.Right + 2, spritePreview.Top),
+                FlatStyle = FlatStyle.Flat
+            };
+            var down = new Button
+            {
+                Text = "▼",
+                Size = new Size(22, 20),
+                Location = new Point(spritePreview.Right + 2, spritePreview.Bottom - 20),
+                FlatStyle = FlatStyle.Flat
+            };
+            up.Click += (s, e) => OverworldSpritePreview.StepFrame(spritePreview, (int)npcSpriteIDNumberBox.Value, -1);
+            down.Click += (s, e) => OverworldSpritePreview.StepFrame(spritePreview, (int)npcSpriteIDNumberBox.Value, 1);
+            parent.Controls.Add(up);
+            parent.Controls.Add(down);
+            up.BringToFront();
+            down.BringToFront();
+
+            OverworldSpritePreview.Bind(spritePreview, npcSpriteIDNumberBox);
+        }
+
+        void AttachMapView()
+        {
+            mapView = new OverworldMapView();
+            mapView.Attach(this);
+
+            const int leftGutter = 896;
+            MinimumSize = new Size(leftGutter + 280, Math.Max(Height, 560));
+            if (Width < leftGutter + 420) Width = leftGutter + 420;
+
+            var holder = new Panel
+            {
+                Location = new Point(leftGutter, 8),
+                Size = new Size(Math.Max(240, ClientSize.Width - leftGutter - 8), ClientSize.Height - 16),
+                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
+            };
+            holder.Controls.Add(mapView);
+            Controls.Add(holder);
+            holder.BringToFront();
+
+            npcXPositionNumberBox.ValueChanged += NpcCoordBoxChanged;
+            npcYPositionNumberBox.ValueChanged += NpcCoordBoxChanged;
+            EventHandler redraw = (s, ev) => { if (mapView != null) mapView.InvalidateMap(); };
+            npcSpriteIDNumberBox.ValueChanged += redraw;
+            npcXLeashNumberBox.ValueChanged += redraw;
+            npcYLeashNumberBox.ValueChanged += redraw;
+            npcSightRangeNumberBox.ValueChanged += redraw;
+            npcDirectionNumberBox.ValueChanged += redraw;
+            AttachSidePosBox();
+        }
+
+        NumericUpDown npcSidePosBox;
+        bool railSideEnabled;
+
+        void AttachSidePosBox()
+        {
+            if (npcDirectionNumberBox == null) return;
+            var parent = npcDirectionNumberBox.Parent;
+            if (parent == null) return;
+            var label = new Label
+            {
+                Text = "Side pos",
+                AutoSize = true,
+                Location = new Point(npcDirectionNumberBox.Left - 62, npcDirectionNumberBox.Bottom + 8)
+            };
+            npcSidePosBox = new NumericUpDown
+            {
+                Location = new Point(npcDirectionNumberBox.Left, npcDirectionNumberBox.Bottom + 4),
+                Size = npcDirectionNumberBox.Size,
+                Minimum = -32768,
+                Maximum = 32767
+            };
+            npcSidePosBox.ValueChanged += SidePosChanged;
+            parent.Controls.Add(label);
+            parent.Controls.Add(npcSidePosBox);
+            mapTypeNumberBox.ValueChanged += (s, e) => RefreshSidePosEnabled();
+            RefreshSidePosEnabled();
+        }
+
+        void RefreshSidePosEnabled()
+        {
+            int mapType = mapTypeNumberBox == null ? 0 : (int)mapTypeNumberBox.Value;
+            railSideEnabled = mapType != 0 && mapType != 16;
+            if (npcSidePosBox == null) return;
+            npcSidePosBox.Enabled = railSideEnabled;
+            npcSidePosBox.ReadOnly = !railSideEnabled;
+        }
+
+        void SidePosChanged(object sender, EventArgs e)
+        {
+            if (syncingNpc || !railSideEnabled) return;
+            var objs = CurrentObjects;
+            if (objs == null || objs.NPCs == null) return;
+            int i = (int)npcIDNumberBox.Value;
+            if (i < 0 || i >= objs.NPCs.Count) return;
+            objs.NPCs[i].unknown5 = (short)npcSidePosBox.Value;
+        }
+
+        void NpcCoordBoxChanged(object sender, EventArgs e)
+        {
+            if (syncingNpc) return;
+            var objs = CurrentObjects;
+            if (objs == null || objs.NPCs == null || objs.NPCs.Count == 0) return;
+            int i = (int)npcIDNumberBox.Value;
+            if (i < 0 || i >= objs.NPCs.Count) return;
+            // Only write the box that actually changed. Writing both here used to
+            // stamp the previous NPC's leftover Y onto the newly selected one
+            // while npcIDNumberBox_ValueChanged was still filling the form.
+            if (sender == npcXPositionNumberBox)
+                objs.NPCs[i].xPosition = (short)npcXPositionNumberBox.Value;
+            else if (sender == npcYPositionNumberBox)
+                objs.NPCs[i].yPosition = (short)npcYPositionNumberBox.Value;
+            else
+            {
+                objs.NPCs[i].xPosition = (short)npcXPositionNumberBox.Value;
+                objs.NPCs[i].yPosition = (short)npcYPositionNumberBox.Value;
+            }
+            if (mapView != null) mapView.InvalidateMap();
+        }
+
+        public void SelectNpc(int index)
+        {
+            if (CurrentObjects == null || CurrentObjects.NPCs == null) return;
+            if (index < 0 || index >= CurrentObjects.NPCs.Count) return;
+            if (overworlObjectTabs.TabPages.Count > 0)
+            {
+                overworlObjectTabs.SelectedIndex = 0;
+                overworlObjectTabs.TabPages[0].Enabled = true;
+            }
+            if (index > npcIDNumberBox.Maximum) npcIDNumberBox.Maximum = index;
+            if (npcIDNumberBox.Value != index)
+                npcIDNumberBox.Value = index;
+            else
+                npcIDNumberBox_ValueChanged(this, EventArgs.Empty);
+        }
+
+        public void SelectNpc(int index, bool scrollIntoView)
+        {
+            SelectNpc(index);
+            if (scrollIntoView && mapView != null) mapView.ScrollSelectedIntoView();
+        }
+
+        public int PlaceBlankNpcAt(short x, short y)
+        {
+            var objs = CurrentObjects;
+            if (objs == null || objs.NPCs == null) return -1;
+            if (objs.NPCs.Count >= 255) return -1;
+            var npc = new OverworldNPC
+            {
+                xPosition = x,
+                yPosition = y,
+                defaultDirection = 1
+            };
+            objs.NPCs.Add(npc);
+            objs.ApplyData();
+            int index = objs.NPCs.Count - 1;
+            if (overworlObjectTabs.TabPages.Count > 0)
+            {
+                overworlObjectTabs.SelectedIndex = 0;
+                overworlObjectTabs.TabPages[0].Enabled = true;
+            }
+            npcIDNumberBox.Maximum = index;
+            npcCountLabel.Text = "/ " + npcIDNumberBox.Maximum.ToString();
+            SelectNpc(index, false);
+            if (statusText != null)
+                statusText.Text = "Added NPC " + index + " at (" + x + ", " + y + ") - " + DateTime.Now.StatusText();
+            if (mapView != null) mapView.InvalidateMap();
+            return index;
+        }
+
+        public void MoveNpcTo(int index, short x, short y, bool persist)
+        {
+            var objs = CurrentObjects;
+            if (objs == null || objs.NPCs == null || index < 0 || index >= objs.NPCs.Count) return;
+            var npc = objs.NPCs[index];
+            npc.xPosition = x;
+            npc.yPosition = y;
+            syncingNpc = true;
+            try
+            {
+                if (npcXPositionNumberBox.Value != x) npcXPositionNumberBox.Value = x;
+                if (npcYPositionNumberBox.Value != y) npcYPositionNumberBox.Value = y;
+            }
+            finally { syncingNpc = false; }
+            if (persist)
+            {
+                objs.ApplyData();
+                statusText.Text = "Moved NPC " + index + " to (" + x + ", " + y + ") - " + DateTime.Now.StatusText();
+            }
+            if (mapView != null) mapView.InvalidateMap();
         }
 
         private void LoadZoneIntoEditor(object sender, EventArgs e)
@@ -147,6 +404,8 @@ namespace NewEditor.Forms
                 levelScriptVarNumberBox.Visible = false;
                 levelScriptConstNumberBox.Visible = false;
 
+                if (mapView != null) mapView.Rebuild();
+
                 //string text = "";
                 //for (int n = 0; n < overworldObjectNarc.objects[(int)mapIDNumberBox.Value].endData.Count; n++)
                 //{
@@ -180,6 +439,7 @@ namespace NewEditor.Forms
                 flyYNumberBox.Enabled = false;
 
                 overworlObjectTabs.Enabled = false;
+                if (mapView != null) mapView.Rebuild();
             }
         }
 
@@ -344,17 +604,31 @@ namespace NewEditor.Forms
         {
             OverworldNPC npc = overworldObjectNarc.objects[(int)mapIDNumberBox.Value].NPCs[(int)npcIDNumberBox.Value];
 
-            npcSpriteIDNumberBox.Value = npc.sprite;
-            npcFlagNumberBox.Value = npc.flag;
-            npcScriptNumberBox.Value = npc.scriptUsed;
-            npcXLeashNumberBox.Value = npc.horizontalLeash;
-            npcYLeashNumberBox.Value = npc.verticalLeash;
-            npcSightRangeNumberBox.Value = npc.sightRange;
-            npcMovementPermissionsNumberBox.Value = npc.movementPermissions;
-            npcXPositionNumberBox.Value = npc.xPosition;
-            npcYPositionNumberBox.Value = npc.yPosition;
-            npcZPositionNumberBox.Value = npc.zPosition;
-            npcDirectionNumberBox.Value = npc.defaultDirection;
+            syncingNpc = true;
+            try
+            {
+                npcSpriteIDNumberBox.Value = npc.sprite;
+                npcFlagNumberBox.Value = npc.flag;
+                npcScriptNumberBox.Value = npc.scriptUsed;
+                npcXLeashNumberBox.Value = npc.horizontalLeash;
+                npcYLeashNumberBox.Value = npc.verticalLeash;
+                npcSightRangeNumberBox.Value = npc.sightRange;
+                npcMovementPermissionsNumberBox.Value = npc.movementPermissions;
+                npcXPositionNumberBox.Value = npc.xPosition;
+                npcYPositionNumberBox.Value = npc.yPosition;
+                npcZPositionNumberBox.Value = npc.zPosition;
+                npcDirectionNumberBox.Value = npc.defaultDirection;
+                if (npcSidePosBox != null)
+                {
+                    decimal side = npc.unknown5;
+                    if (side < npcSidePosBox.Minimum) side = npcSidePosBox.Minimum;
+                    if (side > npcSidePosBox.Maximum) side = npcSidePosBox.Maximum;
+                    npcSidePosBox.Value = side;
+                }
+                RefreshSidePosEnabled();
+            }
+            finally { syncingNpc = false; }
+            if (mapView != null) mapView.InvalidateMap();
         }
 
         private void furnitureIDNumberBox_ValueChanged(object sender, EventArgs e)
@@ -469,8 +743,11 @@ namespace NewEditor.Forms
                 npc.yPosition = (short)npcYPositionNumberBox.Value;
                 npc.zPosition = (short)npcZPositionNumberBox.Value;
                 npc.defaultDirection = (short)npcDirectionNumberBox.Value;
+                if (npcSidePosBox != null && railSideEnabled)
+                    npc.unknown5 = (short)npcSidePosBox.Value;
 
                 statusText.Text = "Saved npc data - " + DateTime.Now.StatusText();
+                if (mapView != null) mapView.InvalidateMap();
             }
             if (overworlObjectTabs.SelectedIndex == 1)
             {

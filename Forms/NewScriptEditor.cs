@@ -43,6 +43,223 @@ namespace NewEditor.Forms
             }
 
             loading = false;
+            AttachScriptsFolderUi();
+        }
+
+        string scriptsFolder = "";
+        Label scriptsFolderLabel;
+        Button setScriptsFolderButton;
+        Button openScriptButton;
+
+        void AttachScriptsFolderUi()
+        {
+            List<byte> saved = FileFunctions.ReadFileSection("Preferences.txt", "ScriptsFolder");
+            if (saved != null && saved.Count > 0)
+                scriptsFolder = Encoding.UTF8.GetString(saved.ToArray()).Trim();
+
+            setScriptsFolderButton = new Button
+            {
+                Text = "Set Scripts Folder",
+                Size = new Size(130, 40),
+                Location = new Point(140, 220),
+                UseVisualStyleBackColor = true
+            };
+            setScriptsFolderButton.Click += SetScriptsFolder_Click;
+
+            openScriptButton = new Button
+            {
+                Text = "Open Script",
+                Size = new Size(130, 40),
+                Location = new Point(140, 265),
+                UseVisualStyleBackColor = true
+            };
+            openScriptButton.Click += OpenScript_Click;
+
+            scriptsFolderLabel = new Label
+            {
+                AutoSize = false,
+                Size = new Size(390, 36),
+                Location = new Point(140, 310),
+                Text = ""
+            };
+
+            Controls.Add(setScriptsFolderButton);
+            Controls.Add(openScriptButton);
+            Controls.Add(scriptsFolderLabel);
+            setScriptsFolderButton.BringToFront();
+            openScriptButton.BringToFront();
+            scriptsFolderLabel.BringToFront();
+            RefreshScriptsFolderLabel();
+        }
+
+        void RefreshScriptsFolderLabel()
+        {
+            if (scriptsFolderLabel == null) return;
+            if (string.IsNullOrEmpty(scriptsFolder))
+                scriptsFolderLabel.Text = "Scripts folder: (not set)";
+            else
+                scriptsFolderLabel.Text = "Scripts folder: " + scriptsFolder;
+        }
+
+        bool HasScriptsFolder()
+        {
+            return !string.IsNullOrEmpty(scriptsFolder) && Directory.Exists(scriptsFolder);
+        }
+
+        bool EnsureScriptsFolder()
+        {
+            if (HasScriptsFolder()) return true;
+            MessageBox.Show("Set a scripts folder first.");
+            return false;
+        }
+
+        string CurrentScriptPath()
+        {
+            if (scriptFileDropdown.SelectedIndex < 0) return null;
+            return Path.Combine(scriptsFolder, scriptFileDropdown.SelectedIndex.ToString() + ".c");
+        }
+
+        void SetScriptsFolder_Click(object sender, EventArgs e)
+        {
+            using (var prompt = new FolderBrowserDialog())
+            {
+                prompt.Description = "Choose the folder that holds script_id.c files";
+                if (HasScriptsFolder()) prompt.SelectedPath = scriptsFolder;
+                if (prompt.ShowDialog() != DialogResult.OK) return;
+                scriptsFolder = prompt.SelectedPath;
+                FileFunctions.WriteFileSection("Preferences.txt", "ScriptsFolder",
+                    Encoding.UTF8.GetBytes(scriptsFolder));
+                RefreshScriptsFolderLabel();
+                if (statusText != null)
+                    statusText.Text = "Scripts folder set to " + scriptsFolder + " - " + DateTime.Now.StatusText();
+            }
+        }
+
+        void PrepareCommandList()
+        {
+            CommandReference.commandList = new Dictionary<int, Data.NARCTypes.CommandType>(commandNameSelection3.Checked && CommandReference.customCommandList.Count > 0 ? CommandReference.customCommandList : MainEditor.RomType == RomType.BW1 ? CommandReference.bw1CommandList :
+                commandNameSelection2.Checked ? CommandReference.bw2BeaterScriptCommandList : CommandReference.bw2CommandList);
+            if (loadedOverlayDropdown.SelectedIndex > 0 && int.TryParse((string)loadedOverlayDropdown.SelectedItem, out int ov))
+            {
+                foreach (var cmd in CommandReference.bw2OverlayCommands[ov])
+                    CommandReference.commandList.Add(cmd.Key, cmd.Value);
+            }
+        }
+
+        string[] ExportHeaders()
+        {
+            var headers = new List<string>()
+            {
+                MainEditor.RomType == RomType.BW1 ? "ScriptHeaders/ScriptCommandsBW1.h" :
+                commandNameSelection2.Checked ? "ScriptHeaders/BeaterScriptCommandsBW2.h" : "ScriptHeaders/FrostScriptCommandsBW2.h",
+                "ScriptHeaders/MovementCommands.h"
+            };
+            if (loadedOverlayDropdown.SelectedIndex > 0 && int.TryParse((string)loadedOverlayDropdown.SelectedItem, out int ov2))
+                headers.Add("ScriptHeaders/CommandOverlay" + ov2 + ".h");
+            return headers.ToArray();
+        }
+
+        void CopyScriptHeaders(string destDir)
+        {
+            string src = Path.Combine(Directory.GetCurrentDirectory(), "ScriptHeaders");
+            if (!Directory.Exists(src)) return;
+            string dest = Path.Combine(destDir, "ScriptHeaders");
+            if (!Directory.Exists(dest)) Directory.CreateDirectory(dest);
+            foreach (string file in Directory.GetFiles(src))
+                File.Copy(file, Path.Combine(dest, Path.GetFileName(file)), true);
+        }
+
+        bool WriteScriptExport(string path)
+        {
+            PrepareCommandList();
+            MainEditor.scriptNarc.scriptFiles[scriptFileDropdown.SelectedIndex].ReadData();
+            FileStream writer = null;
+            try
+            {
+                writer = File.OpenWrite(path);
+                writer.SetLength(0);
+                MainEditor.scriptNarc.scriptFiles[scriptFileDropdown.SelectedIndex].Export(writer, ExportHeaders());
+            }
+            catch
+            {
+                if (writer != null) writer.Close();
+                MessageBox.Show("An error has occured while exporting the file.\nThis may be caused by the required overlay commands not being loaded.");
+                return false;
+            }
+            if (writer != null) writer.Close();
+            CopyScriptHeaders(Path.GetDirectoryName(path));
+            return true;
+        }
+
+        void OpenInDefaultEditor(string path)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+            }
+            catch
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo("explorer", "\"" + path + "\"") { UseShellExecute = true });
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Could not open " + path + "\n" + ex.Message);
+                }
+            }
+        }
+
+        bool ImportFromPath(string path)
+        {
+            PrepareCommandList();
+            StreamReader reader = null;
+            try
+            {
+                reader = File.OpenText(path);
+            }
+            catch
+            {
+                MessageBox.Show("Failed to open file");
+                return false;
+            }
+
+            ScriptFile newFile = null;
+            try
+            {
+                newFile = ScriptFile.FromFile(reader);
+            }
+            catch (Exception ex)
+            {
+                if (reader != null) reader.Close();
+                MessageBox.Show(ex.Message);
+                return false;
+            }
+            if (reader != null) reader.Close();
+            MainEditor.scriptNarc.scriptFiles[scriptFileDropdown.SelectedIndex] = newFile;
+            LoadScriptFile(null, EventArgs.Empty);
+            return true;
+        }
+
+        void OpenScript_Click(object sender, EventArgs e)
+        {
+            if (scriptFileDropdown.SelectedIndex < 0)
+            {
+                MessageBox.Show("Select a script first.");
+                return;
+            }
+            if (!EnsureScriptsFolder()) return;
+            string path = CurrentScriptPath();
+            if (!File.Exists(path))
+            {
+                if (!WriteScriptExport(path)) return;
+                statusText.Text = "Exported and opened " + path + " - " + DateTime.Now.StatusText();
+            }
+            else
+            {
+                statusText.Text = "Opened " + path + " - " + DateTime.Now.StatusText();
+            }
+            OpenInDefaultEditor(path);
         }
 
         private void LoadScriptFile(object sender, EventArgs e)
@@ -141,43 +358,28 @@ namespace NewEditor.Forms
                     CommandReference.commandList.Add(cmd.Key, cmd.Value);
             }
 
-            OpenFileDialog prompt = new OpenFileDialog();
-            prompt.Filter = "c file|*.c";
+            if (scriptFileDropdown.SelectedIndex < 0) return;
 
-            if (prompt.ShowDialog() == DialogResult.OK)
+            string path = null;
+            if (HasScriptsFolder())
             {
-                StreamReader reader = null;
-                try
+                path = CurrentScriptPath();
+                if (!File.Exists(path))
                 {
-                    reader = File.OpenText(prompt.FileName);
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show("Failed to open file");
+                    statusText.Text = Path.GetFileName(path) + " not found in scripts folder - " + DateTime.Now.StatusText();
                     return;
                 }
-
-                if (reader != null)
-                {
-                    ScriptFile newFile = null;
-                    try
-                    {
-                        newFile = ScriptFile.FromFile(reader);
-                    }
-                    catch (Exception ex)
-                    {
-                        reader.Close();
-                        MessageBox.Show(ex.Message);
-                        return;
-                    }
-
-                    reader.Close();
-                    MainEditor.scriptNarc.scriptFiles[scriptFileDropdown.SelectedIndex] = newFile;
-                    LoadScriptFile(sender, e);
-                }
-
-                statusText.Text = "Imported script from script file - " + DateTime.Now.StatusText();
             }
+            else
+            {
+                OpenFileDialog prompt = new OpenFileDialog();
+                prompt.Filter = "c file|*.c";
+                if (prompt.ShowDialog() != DialogResult.OK) return;
+                path = prompt.FileName;
+            }
+
+            if (ImportFromPath(path))
+                statusText.Text = "Imported " + path + " as script " + scriptFileDropdown.SelectedIndex + " - " + DateTime.Now.StatusText();
         }
 
         private void ExportScriptFile(object sender, EventArgs e)
@@ -190,69 +392,47 @@ namespace NewEditor.Forms
                     CommandReference.commandList.Add(cmd.Key, cmd.Value);
             }
 
-            MainEditor.scriptNarc.scriptFiles[scriptFileDropdown.SelectedIndex].ReadData();
+            if (scriptFileDropdown.SelectedIndex < 0) return;
 
-            SaveFileDialog prompt = new SaveFileDialog();
-            prompt.Filter = "c file|*.c";
-
-            if (prompt.ShowDialog() == DialogResult.OK)
+            string path;
+            bool openAfter = true;
+            if (HasScriptsFolder())
             {
-                FileStream writer = null;
-                try
+                path = CurrentScriptPath();
+                if (File.Exists(path))
                 {
-                    writer = File.OpenWrite(prompt.FileName);
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show("Failed to open file");
-                    return;
-                }
-
-                if (writer != null)
-                {
-                    writer.SetLength(0);
-                    List<string> headers = new List<string>()
+                    DialogResult ask = MessageBox.Show(
+                        path + " already exists.\n\nYes = overwrite and open\nNo = open the existing file without changing it\nCancel = do nothing",
+                        "Script already exists",
+                        MessageBoxButtons.YesNoCancel,
+                        MessageBoxIcon.Warning);
+                    if (ask == DialogResult.Cancel) return;
+                    if (ask == DialogResult.No)
                     {
-                        MainEditor.RomType == RomType.BW1 ? "ScriptHeaders/ScriptCommandsBW1.h" :
-                        commandNameSelection2.Checked ? "ScriptHeaders/BeaterScriptCommandsBW2.h" : "ScriptHeaders/FrostScriptCommandsBW2.h",
-                        "ScriptHeaders/MovementCommands.h"
-                    };
-                    if (loadedOverlayDropdown.SelectedIndex > 0 && int.TryParse((string)loadedOverlayDropdown.SelectedItem, out int ov2))
-                    {
-                        headers.Add("ScriptHeaders/CommandOverlay" + ov2 + ".h");
-                    }
-
-                    try
-                    {
-                        MainEditor.scriptNarc.scriptFiles[scriptFileDropdown.SelectedIndex].Export(writer, headers.ToArray());
-                    }
-                    catch
-                    {
-                        MessageBox.Show("An error has occured while exporting the file.\nThis may be caused by the required overlay commands not being loaded.");
-                        writer.Close();
+                        OpenInDefaultEditor(path);
+                        statusText.Text = "Opened existing " + path + " - " + DateTime.Now.StatusText();
                         return;
                     }
-                    writer.Close();
                 }
+            }
+            else
+            {
+                SaveFileDialog prompt = new SaveFileDialog();
+                prompt.Filter = "c file|*.c";
+                prompt.FileName = scriptFileDropdown.SelectedIndex.ToString() + ".c";
+                if (prompt.ShowDialog() != DialogResult.OK) return;
+                path = prompt.FileName;
+                openAfter = false;
+            }
 
-                string root = Path.GetDirectoryName(prompt.FileName);
-                if (Directory.Exists(Directory.GetCurrentDirectory() + "\\ScriptHeaders"))
-                {
-                    if (!Directory.Exists(root + "\\ScriptHeaders")) Directory.CreateDirectory(root + "\\ScriptHeaders");
-                    foreach (string file in Directory.GetFiles(Directory.GetCurrentDirectory() + "\\ScriptHeaders"))
-                    {
-                        File.Copy(file, root + "\\ScriptHeaders\\" + Path.GetFileName(file), true);
-                    }
-                }
-
-                statusText.Text = "Exported script file to " + prompt.FileName + " - " + DateTime.Now.StatusText();
-                var result = MessageBox.Show("Script file saved to " + prompt.FileName + "\n\nWould you like to open the file in a text editor?", "Script Saved", MessageBoxButtons.YesNo);
-
-                if (result == DialogResult.Yes)
-                {
-                    ProcessStartInfo start = new ProcessStartInfo("explorer", prompt.FileName);
-                    Process.Start(start);
-                }
+            if (!WriteScriptExport(path)) return;
+            statusText.Text = "Exported script " + scriptFileDropdown.SelectedIndex + " to " + path + " - " + DateTime.Now.StatusText();
+            if (openAfter)
+                OpenInDefaultEditor(path);
+            else
+            {
+                var result = MessageBox.Show("Script file saved to " + path + "\n\nWould you like to open the file in a text editor?", "Script Saved", MessageBoxButtons.YesNo);
+                if (result == DialogResult.Yes) OpenInDefaultEditor(path);
             }
         }
 

@@ -122,12 +122,123 @@ namespace NewEditor.Forms
 
         public static MainEditor instance;
 
+        TextBox playtestPathBox;
+        Button savePlaytestButton;
+
         public MainEditor()
         {
             instance = this;
             InitializeComponent();
-
+            AddPlaytestSave();
             TryAutoLoad();
+        }
+
+        void AddPlaytestSave()
+        {
+            if (saveRomButton == null) return;
+            var panel = new Panel
+            {
+                Size = new Size(320, 64),
+                Anchor = AnchorStyles.Top | AnchorStyles.Left
+            };
+            var pathLabel = new Label
+            {
+                Text = "Playtest ROM",
+                Location = new Point(0, 0),
+                AutoSize = true
+            };
+            playtestPathBox = new TextBox
+            {
+                Location = new Point(0, 18),
+                Size = new Size(228, 22)
+            };
+            var browse = new Button
+            {
+                Text = "...",
+                Location = new Point(232, 17),
+                Size = new Size(32, 22)
+            };
+            browse.Click += (s, e) =>
+            {
+                using (var prompt = new OpenFileDialog())
+                {
+                    prompt.Filter = "Nds Roms|*.nds";
+                    prompt.Title = "Playtest ROM";
+                    if (!string.IsNullOrEmpty(playtestPathBox.Text))
+                    {
+                        try
+                        {
+                            prompt.InitialDirectory = Path.GetDirectoryName(playtestPathBox.Text);
+                            prompt.FileName = Path.GetFileName(playtestPathBox.Text);
+                        }
+                        catch { }
+                    }
+                    if (prompt.ShowDialog() == DialogResult.OK)
+                    {
+                        playtestPathBox.Text = prompt.FileName;
+                        FileFunctions.WriteFileSection("Preferences.txt", "PlaytestPath", Encoding.UTF8.GetBytes(prompt.FileName));
+                    }
+                }
+            };
+            savePlaytestButton = new Button
+            {
+                Text = "Save Playtest",
+                Location = new Point(0, 42),
+                Size = new Size(110, 22)
+            };
+            savePlaytestButton.Click += SavePlaytestButton;
+            panel.Controls.Add(pathLabel);
+            panel.Controls.Add(playtestPathBox);
+            panel.Controls.Add(browse);
+            panel.Controls.Add(savePlaytestButton);
+            Controls.Add(panel);
+            panel.BringToFront();
+
+            EventHandler place = (s, e) =>
+            {
+                panel.Location = new Point(saveRomButton.Left, saveRomButton.Bottom + 8);
+            };
+            Load += place;
+            saveRomButton.LocationChanged += place;
+            place(this, EventArgs.Empty);
+
+            List<byte> saved = FileFunctions.ReadFileSection("Preferences.txt", "PlaytestPath");
+            if (saved != null && saved.Count > 0)
+                playtestPathBox.Text = Encoding.UTF8.GetString(saved.ToArray());
+            playtestPathBox.Leave += (s, e) =>
+            {
+                FileFunctions.WriteFileSection("Preferences.txt", "PlaytestPath", Encoding.UTF8.GetBytes(playtestPathBox.Text ?? ""));
+            };
+        }
+
+        public void SavePlaytestButton(object sender, EventArgs e)
+        {
+            string path = playtestPathBox == null ? "" : (playtestPathBox.Text ?? "").Trim();
+            FileFunctions.WriteFileSection("Preferences.txt", "PlaytestPath", Encoding.UTF8.GetBytes(path));
+            if (path.Length == 0)
+            {
+                statusText.Text = "Playtest path is empty - " + DateTime.Now.StatusText();
+                return;
+            }
+            if (fileSystem == null)
+            {
+                statusText.Text = "No ROM loaded - " + DateTime.Now.StatusText();
+                return;
+            }
+            statusText.Text = "Saving playtest";
+            try
+            {
+                string dir = Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
+                byte[] data = fileSystem.BuildRom();
+                File.WriteAllBytes(path, data);
+                statusText.Text = "Saved playtest to " + path + " - " + DateTime.Now.StatusText();
+            }
+            catch (Exception ex)
+            {
+                statusText.Text = "Failed to save playtest - " + ex.Message + " - " + DateTime.Now.StatusText();
+            }
         }
 
         public void ChangeTheme(object sender, EventArgs e)
@@ -342,7 +453,6 @@ namespace NewEditor.Forms
                 fileStream.Close();
                 taskProgressBar.Value = taskProgressBar.Maximum;
                 statusText.Text = "Saved rom to " + prompt.FileName + " - " + DateTime.Now.StatusText();
-                MessageBox.Show("Rom saved to " + prompt.FileName);
             }
             else
             {
@@ -484,8 +594,6 @@ namespace NewEditor.Forms
             romTypeText.Text = "Rom Type: " + romType;
             taskProgressBar.Value = taskProgressBar.Maximum;
             statusText.Text = "Loaded rom - " + DateTime.Now.StatusText();
-
-            MessageBox.Show("Rom Loaded");
 
             loadingNARCS = false;
             autoLoaded = false;
