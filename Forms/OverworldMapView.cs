@@ -751,13 +751,7 @@ namespace NewEditor.Forms
                     string face = f.interactibility >= 0 && f.interactibility < OverworldFurniture.InteractNames.Length
                         ? OverworldFurniture.InteractNames[f.interactibility]
                         : f.interactibility.ToString();
-                    string extra = f.scriptUsed == 0 ? "hidden item " + f.condition : "script " + f.scriptUsed;
-                    if (f.scriptUsed == 0 && host != null)
-                    {
-                        string item = host.ItemName(f.condition);
-                        if (!string.IsNullOrEmpty(item)) extra = "hidden " + item;
-                    }
-                    tip += string.Format("\nProxy #{0}  {1}  {2}", i, extra, face);
+                    tip += string.Format("\nProxy #{0}  script {1}  cond {2}  {3}", i, f.scriptUsed, f.condition, face);
                 }
             }
             hoverTip.SetToolTip(canvas, tip);

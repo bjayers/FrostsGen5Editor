@@ -166,31 +166,54 @@ namespace NewEditor.Forms
             };
             if (textNARC != null && textNARC.textFiles.Count > VersionConstants.ItemNameTextFileID)
                 proxyItemBox.Items.AddRange(textNARC.textFiles[VersionConstants.ItemNameTextFileID].text.ToArray());
-            proxyItemBox.SelectedIndexChanged += ProxyItemBoxChanged;
             furnitureScriptNumberBox.ValueChanged += (s, e) => { if (!syncingProxy) UpdateProxyItemMode(); };
             furnitureTab.Controls.Add(proxyItemLabel);
             furnitureTab.Controls.Add(proxyItemBox);
         }
 
-        void ProxyItemBoxChanged(object sender, EventArgs e)
-        {
-            if (syncingProxy || proxyItemBox == null || proxyConditionBox == null) return;
-            if (furnitureScriptNumberBox.Value != 0) return;
-            if (proxyItemBox.SelectedIndex < 0) return;
-            syncingProxy = true;
-            try { proxyConditionBox.Value = ClampBox(proxyConditionBox, proxyItemBox.SelectedIndex); }
-            finally { syncingProxy = false; }
-        }
-
         void UpdateProxyItemMode()
         {
             if (proxyItemBox == null) return;
-            bool hidden = furnitureScriptNumberBox.Value == 0;
-            proxyItemBox.Enabled = hidden;
-            proxyItemLabel.Text = hidden ? "Item:" : "Item (script in use):";
-            proxyHintLabel.Text = hidden
-                ? "Script 0 is the hidden-item handler, not a missing script. Saving leaves it at 0. The item is the condition field; changing the dropdown writes only that."
-                : "This proxy calls a script. Condition is a work value, not an item. Script is written only from this box.";
+            int script = (int)furnitureScriptNumberBox.Value;
+            int item = ScriptItemId(script);
+            if (script == 0)
+            {
+                proxyItemBox.Enabled = false;
+                proxyItemBox.SelectedIndex = -1;
+                proxyItemLabel.Text = "Item:";
+                proxyHintLabel.Text = "Script 0 is stored as 0. Apply writes it back unchanged. Condition is left alone.";
+            }
+            else if (item >= 0)
+            {
+                proxyItemBox.Enabled = false;
+                if (item < proxyItemBox.Items.Count) proxyItemBox.SelectedIndex = item;
+                proxyItemLabel.Text = "Item (from script):";
+                proxyHintLabel.Text = "Item comes from the script, same as the NPC tab. Condition is not the item.";
+            }
+            else
+            {
+                proxyItemBox.Enabled = false;
+                proxyItemBox.SelectedIndex = -1;
+                proxyItemLabel.Text = "Item:";
+                proxyHintLabel.Text = "Script is written only from the Script box. Condition is a raw field; meaning is not confirmed.";
+            }
+        }
+
+        // Same lookup the NPC tab uses. 7000-7399 is file 1240 (BW2) / 864 (BW).
+        // 8000-8399 is tried against the next file for hidden-item scripts such as 8212.
+        int ScriptItemId(int script)
+        {
+            try
+            {
+                int file = -1, seq = -1;
+                if (script >= 7000 && script < 7400) { file = MainEditor.RomType == RomType.BW2 ? 1240 : 864; seq = script - 7000; }
+                else if (script >= 8000 && script < 8400) { file = MainEditor.RomType == RomType.BW2 ? 1241 : 865; seq = script - 8000; }
+                if (file < 0 || MainEditor.scriptNarc == null) return -1;
+                var sf = MainEditor.scriptNarc.scriptFiles[file];
+                if (seq < 0 || seq >= sf.sequences.Count) return -1;
+                return sf.sequences[seq].commands[1].parameters[1];
+            }
+            catch { return -1; }
         }
 
         public string ItemName(int id)
@@ -805,13 +828,6 @@ namespace NewEditor.Forms
                 furnitureYPosNumberBox.Value = ClampBox(furnitureYPosNumberBox, fur.height);
                 UpdateProxyRailLabels();
                 UpdateProxyItemMode();
-                if (fur.scriptUsed == 0 && proxyItemBox.Items.Count > 0)
-                {
-                    int item = fur.condition;
-                    if (item < 0) item = 0;
-                    if (item >= proxyItemBox.Items.Count) item = 0;
-                    proxyItemBox.SelectedIndex = item;
-                }
             }
             finally { syncingProxy = false; }
             if (mapView != null) mapView.InvalidateMap();
@@ -827,13 +843,8 @@ namespace NewEditor.Forms
         void ReadProxyFields(OverworldFurniture fur)
         {
             if (fur == null || proxyInteractBox == null) return;
-            // Script 0 is stored that way for hidden items. Write the box value,
-            // which is the loaded script unless the user changed it.
             fur.scriptUsed = (short)furnitureScriptNumberBox.Value;
-            if (fur.scriptUsed == 0 && proxyItemBox != null && proxyItemBox.SelectedIndex >= 0)
-                fur.condition = (short)proxyItemBox.SelectedIndex;
-            else
-                fur.condition = (short)proxyConditionBox.Value;
+            fur.condition = (short)proxyConditionBox.Value;
             fur.interactibility = (short)Math.Max(0, proxyInteractBox.SelectedIndex);
             fur.rail = proxyRailBox.Checked;
             fur.height = (int)furnitureYPosNumberBox.Value;
@@ -1050,9 +1061,7 @@ namespace NewEditor.Forms
                 OverworldFurniture fur = list[(int)furnitureIDNumberBox.Value];
                 ReadProxyFields(fur);
                 overworldObjectNarc.objects[(int)mapIDNumberBox.Value].ApplyData();
-                statusText.Text = fur.scriptUsed == 0
-                    ? "Saved hidden-item proxy (script left at 0, item " + fur.condition + ") - " + DateTime.Now.StatusText()
-                    : "Saved proxy script " + fur.scriptUsed + " - " + DateTime.Now.StatusText();
+                statusText.Text = "Saved proxy script " + fur.scriptUsed + " - " + DateTime.Now.StatusText();
                 if (mapView != null) mapView.InvalidateMap();
             }
             else if (overworlObjectTabs.SelectedIndex == 2)
