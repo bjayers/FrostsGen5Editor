@@ -25,10 +25,12 @@ namespace NewEditor.Forms
         bool syncingNpc;
         bool syncingProxy;
         ComboBox proxyInteractBox;
+        ComboBox proxyItemBox;
         CheckBox proxyRailBox;
         NumericUpDown proxyConditionBox;
         NumericUpDown proxySideBox;
         Label proxyHintLabel;
+        Label proxyItemLabel;
 
         public ZoneDataEntry CurrentZone
         {
@@ -154,6 +156,52 @@ namespace NewEditor.Forms
             furnitureTab.Controls.Add(proxyRailBox);
             furnitureTab.Controls.Add(sideLabel);
             furnitureTab.Controls.Add(proxySideBox);
+
+            proxyItemLabel = new Label { AutoSize = true, Location = new Point(160, 118), Text = "Item:" };
+            proxyItemBox = new ComboBox
+            {
+                Location = new Point(200, 114),
+                Size = new Size(220, 22),
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            if (textNARC != null && textNARC.textFiles.Count > VersionConstants.ItemNameTextFileID)
+                proxyItemBox.Items.AddRange(textNARC.textFiles[VersionConstants.ItemNameTextFileID].text.ToArray());
+            proxyItemBox.SelectedIndexChanged += ProxyItemBoxChanged;
+            furnitureScriptNumberBox.ValueChanged += (s, e) => { if (!syncingProxy) UpdateProxyItemMode(); };
+            furnitureTab.Controls.Add(proxyItemLabel);
+            furnitureTab.Controls.Add(proxyItemBox);
+        }
+
+        void ProxyItemBoxChanged(object sender, EventArgs e)
+        {
+            if (syncingProxy || proxyItemBox == null || proxyConditionBox == null) return;
+            if (furnitureScriptNumberBox.Value != 0) return;
+            if (proxyItemBox.SelectedIndex < 0) return;
+            syncingProxy = true;
+            try { proxyConditionBox.Value = ClampBox(proxyConditionBox, proxyItemBox.SelectedIndex); }
+            finally { syncingProxy = false; }
+        }
+
+        void UpdateProxyItemMode()
+        {
+            if (proxyItemBox == null) return;
+            bool hidden = furnitureScriptNumberBox.Value == 0;
+            proxyItemBox.Enabled = hidden;
+            proxyItemLabel.Text = hidden ? "Item:" : "Item (script in use):";
+            proxyHintLabel.Text = hidden
+                ? "Script 0 is the hidden-item handler, not a missing script. Saving leaves it at 0. The item is the condition field; changing the dropdown writes only that."
+                : "This proxy calls a script. Condition is a work value, not an item. Script is written only from this box.";
+        }
+
+        public string ItemName(int id)
+        {
+            try
+            {
+                var names = textNARC.textFiles[VersionConstants.ItemNameTextFileID].text;
+                if (id >= 0 && id < names.Count) return names[id];
+            }
+            catch { }
+            return null;
         }
 
         void UpdateProxyRailLabels()
@@ -756,6 +804,14 @@ namespace NewEditor.Forms
                 }
                 furnitureYPosNumberBox.Value = ClampBox(furnitureYPosNumberBox, fur.height);
                 UpdateProxyRailLabels();
+                UpdateProxyItemMode();
+                if (fur.scriptUsed == 0 && proxyItemBox.Items.Count > 0)
+                {
+                    int item = fur.condition;
+                    if (item < 0) item = 0;
+                    if (item >= proxyItemBox.Items.Count) item = 0;
+                    proxyItemBox.SelectedIndex = item;
+                }
             }
             finally { syncingProxy = false; }
             if (mapView != null) mapView.InvalidateMap();
@@ -771,8 +827,13 @@ namespace NewEditor.Forms
         void ReadProxyFields(OverworldFurniture fur)
         {
             if (fur == null || proxyInteractBox == null) return;
+            // Script 0 is stored that way for hidden items. Write the box value,
+            // which is the loaded script unless the user changed it.
             fur.scriptUsed = (short)furnitureScriptNumberBox.Value;
-            fur.condition = (short)proxyConditionBox.Value;
+            if (fur.scriptUsed == 0 && proxyItemBox != null && proxyItemBox.SelectedIndex >= 0)
+                fur.condition = (short)proxyItemBox.SelectedIndex;
+            else
+                fur.condition = (short)proxyConditionBox.Value;
             fur.interactibility = (short)Math.Max(0, proxyInteractBox.SelectedIndex);
             fur.rail = proxyRailBox.Checked;
             fur.height = (int)furnitureYPosNumberBox.Value;
@@ -989,7 +1050,9 @@ namespace NewEditor.Forms
                 OverworldFurniture fur = list[(int)furnitureIDNumberBox.Value];
                 ReadProxyFields(fur);
                 overworldObjectNarc.objects[(int)mapIDNumberBox.Value].ApplyData();
-                statusText.Text = "Saved proxy data - " + DateTime.Now.StatusText();
+                statusText.Text = fur.scriptUsed == 0
+                    ? "Saved hidden-item proxy (script left at 0, item " + fur.condition + ") - " + DateTime.Now.StatusText()
+                    : "Saved proxy script " + fur.scriptUsed + " - " + DateTime.Now.StatusText();
                 if (mapView != null) mapView.InvalidateMap();
             }
             else if (overworlObjectTabs.SelectedIndex == 2)
@@ -1008,6 +1071,7 @@ namespace NewEditor.Forms
                 warp.unknown2 = (byte)warpTransitionTypeNumberBox.Value;
 
                 statusText.Text = "Saved warp data - " + DateTime.Now.StatusText();
+                if (mapView != null) mapView.InvalidateMap();
             }
             else if (overworlObjectTabs.SelectedIndex == 3)
             {
@@ -1023,6 +1087,7 @@ namespace NewEditor.Forms
                 trigger.height = (short)triggerHeightNumberBox.Value;
 
                 statusText.Text = "Saved trigger data - " + DateTime.Now.StatusText();
+                if (mapView != null) mapView.InvalidateMap();
             }
             else if (overworlObjectTabs.SelectedIndex == 4)
             {

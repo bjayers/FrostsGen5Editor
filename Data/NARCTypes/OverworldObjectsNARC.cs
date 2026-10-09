@@ -134,8 +134,11 @@ namespace NewEditor.Data.NARCTypes
             furniture = new List<OverworldFurniture>();
             for (int i = 0; i < bytes[4]; i++)
             {
+                byte[] raw = new byte[OverworldFurniture.Bytes];
+                Array.Copy(bytes, readPos, raw, 0, OverworldFurniture.Bytes);
                 var fur = new OverworldFurniture()
                 {
+                    raw = raw,
                     scriptUsed = (short)HelperFunctions.ReadShort(bytes, readPos),
                     condition = (short)HelperFunctions.ReadShort(bytes, readPos + 2),
                     interactibility = (short)HelperFunctions.ReadShort(bytes, readPos + 4),
@@ -382,6 +385,7 @@ namespace NewEditor.Data.NARCTypes
     {
         public const int Bytes = 20;
 
+        public byte[] raw;
         public short scriptUsed;
         public short condition;
         public short interactibility;
@@ -398,9 +402,16 @@ namespace NewEditor.Data.NARCTypes
             "South", "West", "East", "North", "All", "West/East", "North/South"
         };
 
+        public bool IsHiddenItem
+        {
+            get { return scriptUsed == 0; }
+        }
+
         public byte[] ToBytes()
         {
+            // Start from the bytes we loaded so an untouched pad is not zeroed.
             byte[] b = new byte[Bytes];
+            if (raw != null && raw.Length == Bytes) Array.Copy(raw, b, Bytes);
             WriteShort(b, 0, scriptUsed);
             WriteShort(b, 2, condition);
             WriteShort(b, 4, interactibility);
