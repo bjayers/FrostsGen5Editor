@@ -38,3 +38,7 @@ If you have any other issues with the editor, you can join my Discord server to 
 ![image](https://github.com/user-attachments/assets/fbfe3dd3-554e-4078-a4a1-62c691d58681)
 ![image](https://github.com/user-attachments/assets/feb7cb36-e8e9-46eb-9327-9b78ffda181e)
 ![image](https://github.com/user-attachments/assets/f1dcf04d-e7d0-49d1-81e0-410e4222cee7)
+
+## Proxies (interaction spots)
+
+The overworld editor's Proxies tab edits zone-event furniture: tiles the player can interact with without an NPC (signs, hidden items). CTRMap calls the same list the Proxy tool. They are drawn as blue squares on the map. Ctrl+click places one; drag moves a grid proxy. Facing matches CTRMap: South, West, East, North, All, West/East, North/South.

@@ -23,6 +23,12 @@ namespace NewEditor.Forms
         OverworldMapView mapView;
         PictureBox spritePreview;
         bool syncingNpc;
+        bool syncingProxy;
+        ComboBox proxyInteractBox;
+        CheckBox proxyRailBox;
+        NumericUpDown proxyConditionBox;
+        NumericUpDown proxySideBox;
+        Label proxyHintLabel;
 
         public ZoneDataEntry CurrentZone
         {
@@ -75,6 +81,87 @@ namespace NewEditor.Forms
 
             AttachMapView();
             AttachSpritePreview();
+            SetupProxyEditor();
+        }
+
+        void SetupProxyEditor()
+        {
+            if (furnitureTab == null) return;
+            furnitureTab.Text = "Proxies";
+
+            label40.Text = "Script:";
+            label46.Text = "X:";
+            label45.Text = "Height:";
+            label44.Text = "Z:";
+            label46.Visible = true;
+            label45.Visible = true;
+            label44.Visible = true;
+            furnitureXPosNumberBox.Visible = true;
+            furnitureYPosNumberBox.Visible = true;
+            furnitureZPosNumberBox.Visible = true;
+            furnitureXPosNumberBox.Maximum = 100000;
+            furnitureZPosNumberBox.Maximum = 100000;
+            furnitureYPosNumberBox.Maximum = 100000;
+            furnitureXPosNumberBox.Minimum = -100000;
+            furnitureZPosNumberBox.Minimum = -100000;
+            furnitureYPosNumberBox.Minimum = -100000;
+
+            proxyHintLabel = new Label
+            {
+                AutoSize = false,
+                Location = new Point(160, 8),
+                Size = new Size(390, 44),
+                Text = "Interaction spots with no NPC (signs, hidden items). CTRMap calls these proxies. Not 3D props. Ctrl+click the map to place one. Rail-positioned proxies are edited here but not drawn."
+            };
+            furnitureTab.Controls.Add(proxyHintLabel);
+
+            var condLabel = new Label { AutoSize = true, Location = new Point(160, 58), Text = "Condition:" };
+            proxyConditionBox = new NumericUpDown
+            {
+                Location = new Point(240, 54),
+                Size = new Size(70, 22),
+                Maximum = 65535,
+                Minimum = 0
+            };
+            var faceLabel = new Label { AutoSize = true, Location = new Point(320, 58), Text = "Facing:" };
+            proxyInteractBox = new ComboBox
+            {
+                Location = new Point(370, 54),
+                Size = new Size(110, 22),
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            proxyInteractBox.Items.AddRange(OverworldFurniture.InteractNames);
+            proxyRailBox = new CheckBox
+            {
+                AutoSize = true,
+                Location = new Point(160, 88),
+                Text = "Rail position"
+            };
+            proxyRailBox.CheckedChanged += (s, e) => UpdateProxyRailLabels();
+            var sideLabel = new Label { AutoSize = true, Location = new Point(280, 90), Text = "Side:" };
+            proxySideBox = new NumericUpDown
+            {
+                Location = new Point(320, 86),
+                Size = new Size(70, 22),
+                Maximum = 32767,
+                Minimum = -32768,
+                Enabled = false
+            };
+            furnitureTab.Controls.Add(condLabel);
+            furnitureTab.Controls.Add(proxyConditionBox);
+            furnitureTab.Controls.Add(faceLabel);
+            furnitureTab.Controls.Add(proxyInteractBox);
+            furnitureTab.Controls.Add(proxyRailBox);
+            furnitureTab.Controls.Add(sideLabel);
+            furnitureTab.Controls.Add(proxySideBox);
+        }
+
+        void UpdateProxyRailLabels()
+        {
+            bool rail = proxyRailBox != null && proxyRailBox.Checked;
+            label46.Text = rail ? "Line:" : "X:";
+            label44.Text = rail ? "Front:" : "Z:";
+            if (proxySideBox != null) proxySideBox.Enabled = rail;
         }
 
         void AttachSpritePreview()
@@ -359,7 +446,10 @@ namespace NewEditor.Forms
                 }
                 else
                 {
-                    overworlObjectTabs.TabPages[1].Enabled = false;
+                    // Keep the tab selectable so the first proxy can be added.
+                    overworlObjectTabs.TabPages[1].Enabled = true;
+                    furnitureIDNumberBox.Maximum = 0;
+                    furnitureCountLabel.Text = "/ -";
                 }
 
                 if (overworldObjectNarc.objects[(int)mapIDNumberBox.Value].warps.Count > 0)
@@ -633,11 +723,150 @@ namespace NewEditor.Forms
 
         private void furnitureIDNumberBox_ValueChanged(object sender, EventArgs e)
         {
-            OverworldFurniture fur = overworldObjectNarc.objects[(int)mapIDNumberBox.Value].furniture[(int)furnitureIDNumberBox.Value];
-            furnitureScriptNumberBox.Value = fur.scriptUsed;
-            //furnitureXPosNumberBox.Value = fur.xPosition;
-            //furnitureYPosNumberBox.Value = fur.yPosition;
-            //furnitureZPosNumberBox.Value = fur.zPosition;
+            var objs = CurrentObjects;
+            if (objs == null || objs.furniture == null || objs.furniture.Count == 0) return;
+            int index = (int)furnitureIDNumberBox.Value;
+            if (index < 0 || index >= objs.furniture.Count) return;
+            ShowProxy(objs.furniture[index]);
+        }
+
+        void ShowProxy(OverworldFurniture fur)
+        {
+            if (fur == null || proxyConditionBox == null || proxyInteractBox == null) return;
+            syncingProxy = true;
+            try
+            {
+                furnitureScriptNumberBox.Value = ClampBox(furnitureScriptNumberBox, fur.scriptUsed);
+                proxyConditionBox.Value = ClampBox(proxyConditionBox, fur.condition);
+                int face = fur.interactibility;
+                if (face < 0 || face >= proxyInteractBox.Items.Count) face = 0;
+                proxyInteractBox.SelectedIndex = face;
+                proxyRailBox.Checked = fur.rail;
+                if (fur.rail)
+                {
+                    furnitureXPosNumberBox.Value = ClampBox(furnitureXPosNumberBox, fur.railLine);
+                    furnitureZPosNumberBox.Value = ClampBox(furnitureZPosNumberBox, fur.railFront);
+                    proxySideBox.Value = ClampBox(proxySideBox, fur.railSide);
+                }
+                else
+                {
+                    furnitureXPosNumberBox.Value = ClampBox(furnitureXPosNumberBox, fur.gridX);
+                    furnitureZPosNumberBox.Value = ClampBox(furnitureZPosNumberBox, fur.gridZ);
+                    proxySideBox.Value = 0;
+                }
+                furnitureYPosNumberBox.Value = ClampBox(furnitureYPosNumberBox, fur.height);
+                UpdateProxyRailLabels();
+            }
+            finally { syncingProxy = false; }
+            if (mapView != null) mapView.InvalidateMap();
+        }
+
+        static decimal ClampBox(NumericUpDown box, int value)
+        {
+            if (value < box.Minimum) return box.Minimum;
+            if (value > box.Maximum) return box.Maximum;
+            return value;
+        }
+
+        void ReadProxyFields(OverworldFurniture fur)
+        {
+            if (fur == null || proxyInteractBox == null) return;
+            fur.scriptUsed = (short)furnitureScriptNumberBox.Value;
+            fur.condition = (short)proxyConditionBox.Value;
+            fur.interactibility = (short)Math.Max(0, proxyInteractBox.SelectedIndex);
+            fur.rail = proxyRailBox.Checked;
+            fur.height = (int)furnitureYPosNumberBox.Value;
+            if (fur.rail)
+            {
+                fur.railLine = (short)furnitureXPosNumberBox.Value;
+                fur.railFront = (short)furnitureZPosNumberBox.Value;
+                fur.railSide = (short)proxySideBox.Value;
+            }
+            else
+            {
+                fur.gridX = (int)furnitureXPosNumberBox.Value;
+                fur.gridZ = (int)furnitureZPosNumberBox.Value;
+            }
+        }
+
+        public int SelectedProxyIndex
+        {
+            get
+            {
+                if (CurrentObjects == null || CurrentObjects.furniture == null || CurrentObjects.furniture.Count == 0) return -1;
+                return (int)furnitureIDNumberBox.Value;
+            }
+        }
+
+        public bool ProxyTabActive
+        {
+            get { return overworlObjectTabs != null && overworlObjectTabs.SelectedIndex == 1; }
+        }
+
+        public void SelectProxy(int index)
+        {
+            var objs = CurrentObjects;
+            if (objs == null || objs.furniture == null) return;
+            if (index < 0 || index >= objs.furniture.Count) return;
+            if (overworlObjectTabs.TabPages.Count > 1)
+            {
+                overworlObjectTabs.TabPages[1].Enabled = true;
+                overworlObjectTabs.SelectedIndex = 1;
+            }
+            if (index > furnitureIDNumberBox.Maximum) furnitureIDNumberBox.Maximum = index;
+            furnitureCountLabel.Text = "/ " + furnitureIDNumberBox.Maximum.ToString();
+            if (furnitureIDNumberBox.Value != index)
+                furnitureIDNumberBox.Value = index;
+            else
+                ShowProxy(objs.furniture[index]);
+        }
+
+        public int PlaceProxyAt(int x, int z)
+        {
+            var objs = CurrentObjects;
+            if (objs == null || objs.furniture == null) return -1;
+            if (objs.furniture.Count >= 255) return -1;
+            var fur = new OverworldFurniture
+            {
+                gridX = x,
+                gridZ = z,
+                interactibility = 4
+            };
+            objs.furniture.Add(fur);
+            objs.ApplyData();
+            int index = objs.furniture.Count - 1;
+            furnitureIDNumberBox.Maximum = index;
+            furnitureCountLabel.Text = "/ " + index.ToString();
+            SelectProxy(index);
+            statusText.Text = "Added proxy " + index + " at (" + x + ", " + z + ") - " + DateTime.Now.StatusText();
+            if (mapView != null) mapView.InvalidateMap();
+            return index;
+        }
+
+        public void MoveProxyTo(int index, int x, int z, bool persist)
+        {
+            var objs = CurrentObjects;
+            if (objs == null || objs.furniture == null || index < 0 || index >= objs.furniture.Count) return;
+            var fur = objs.furniture[index];
+            if (fur.rail) return;
+            fur.gridX = x;
+            fur.gridZ = z;
+            if (SelectedProxyIndex == index)
+            {
+                syncingProxy = true;
+                try
+                {
+                    furnitureXPosNumberBox.Value = ClampBox(furnitureXPosNumberBox, x);
+                    furnitureZPosNumberBox.Value = ClampBox(furnitureZPosNumberBox, z);
+                }
+                finally { syncingProxy = false; }
+            }
+            if (persist)
+            {
+                objs.ApplyData();
+                statusText.Text = "Moved proxy " + index + " to (" + x + ", " + z + ") - " + DateTime.Now.StatusText();
+            }
+            if (mapView != null) mapView.InvalidateMap();
         }
 
         private void warpIDNumberBox_ValueChanged(object sender, EventArgs e)
@@ -674,7 +903,11 @@ namespace NewEditor.Forms
         private void addObjectButton_Click(object sender, EventArgs e)
         {
             if (overworlObjectTabs.SelectedIndex == 0) overworldObjectNarc.objects[(int)mapIDNumberBox.Value].NPCs.Add(new OverworldNPC());
-            else if (overworlObjectTabs.SelectedIndex == 1) overworldObjectNarc.objects[(int)mapIDNumberBox.Value].furniture.Add(new OverworldFurniture());
+            else if (overworlObjectTabs.SelectedIndex == 1)
+            {
+                var added = new OverworldFurniture { interactibility = 4 };
+                overworldObjectNarc.objects[(int)mapIDNumberBox.Value].furniture.Add(added);
+            }
             else if (overworlObjectTabs.SelectedIndex == 2) overworldObjectNarc.objects[(int)mapIDNumberBox.Value].warps.Add(new OverworldWarp());
             else if (overworlObjectTabs.SelectedIndex == 3) overworldObjectNarc.objects[(int)mapIDNumberBox.Value].triggers.Add(new OverworldTrigger());
             else if (overworlObjectTabs.SelectedIndex == 4)
@@ -751,14 +984,13 @@ namespace NewEditor.Forms
             }
             if (overworlObjectTabs.SelectedIndex == 1)
             {
-                OverworldFurniture fur = overworldObjectNarc.objects[(int)mapIDNumberBox.Value].furniture[(int)furnitureIDNumberBox.Value];
-
-                fur.scriptUsed = (short)furnitureScriptNumberBox.Value;
-                //fur.xPosition = (short)furnitureXPosNumberBox.Value;
-                //fur.yPosition = (short)furnitureYPosNumberBox.Value;
-                //fur.zPosition = (short)furnitureZPosNumberBox.Value;
-
-                statusText.Text = "Saved furniture data - " + DateTime.Now.StatusText();
+                var list = overworldObjectNarc.objects[(int)mapIDNumberBox.Value].furniture;
+                if (list.Count == 0) return;
+                OverworldFurniture fur = list[(int)furnitureIDNumberBox.Value];
+                ReadProxyFields(fur);
+                overworldObjectNarc.objects[(int)mapIDNumberBox.Value].ApplyData();
+                statusText.Text = "Saved proxy data - " + DateTime.Now.StatusText();
+                if (mapView != null) mapView.InvalidateMap();
             }
             else if (overworlObjectTabs.SelectedIndex == 2)
             {

@@ -23,6 +23,7 @@ namespace NewEditor.Forms
         Label infoLabel;
         CheckBox showWarpsBox;
         CheckBox showTriggersBox;
+        CheckBox showProxiesBox;
         CheckBox fitZoneBox;
         CheckBox showTerrainBox;
         CheckBox allTilesBox;
@@ -41,6 +42,7 @@ namespace NewEditor.Forms
         int[,] headers;   // matrix cell header/zone id, may be null
         Dictionary<int, byte[,]> perms = new Dictionary<int, byte[,]>();
         int dragNpc = -1;
+        int dragProxy = -1;
         bool dragging;
         bool panning;
         bool paintingPerms;
@@ -79,6 +81,7 @@ namespace NewEditor.Forms
 
             showTriggersBox = MakeToggle("Triggers", true);
             showWarpsBox = MakeToggle("Warps", true);
+            showProxiesBox = MakeToggle("Proxies", true);
             fitZoneBox = MakeToggle("Fit zone", true);
             showTerrainBox = MakeToggle("Terrain", true);
             allTilesBox = MakeToggle("All tiles", false);
@@ -104,6 +107,7 @@ namespace NewEditor.Forms
             floorBox.ValueChanged += (s, e) => Rebuild();
             showTriggersBox.CheckedChanged += (s, e) => InvalidateMap();
             showWarpsBox.CheckedChanged += (s, e) => InvalidateMap();
+            showProxiesBox.CheckedChanged += (s, e) => InvalidateMap();
             showTerrainBox.CheckedChanged += (s, e) => InvalidateMap();
             allTilesBox.CheckedChanged += (s, e) => InvalidateMap();
             showLeashBox.CheckedChanged += (s, e) => InvalidateMap();
@@ -122,6 +126,7 @@ namespace NewEditor.Forms
             top.Controls.Add(floorLabel);
             top.Controls.Add(showTriggersBox);
             top.Controls.Add(showWarpsBox);
+            top.Controls.Add(showProxiesBox);
             top.Controls.Add(showSightBox);
             top.Controls.Add(showLeashBox);
             top.Controls.Add(allTilesBox);
@@ -229,9 +234,11 @@ namespace NewEditor.Forms
             LoadPermissions();
 
             int npcCount = host.CurrentObjects != null && host.CurrentObjects.NPCs != null ? host.CurrentObjects.NPCs.Count : 0;
+            int proxyCount = host.CurrentObjects != null && host.CurrentObjects.furniture != null ? host.CurrentObjects.furniture.Count : 0;
             int permCells = perms.Count;
-            infoLabel.Text = string.Format("{0}  •  {1}×{2} @ ({3},{4})  •  {5} NPC{6}  •  {7} map file{8} with terrain  •  wheel zoom, MMB pan",
+            infoLabel.Text = string.Format("{0}  •  {1}×{2} @ ({3},{4})  •  {5} NPC{6}  •  {7} prox{8}  •  {9} map file{10}  •  Ctrl+click places a proxy",
                 z.ToString(), mapW, mapH, originX, originY, npcCount, npcCount == 1 ? "" : "s",
+                proxyCount, proxyCount == 1 ? "y" : "ies",
                 permCells, permCells == 1 ? "" : "s");
             ResizeCanvas();
             InvalidateMap();
@@ -465,6 +472,29 @@ namespace NewEditor.Forms
             return found;
         }
 
+        int HitProxy(Point tile)
+        {
+            var objs = host == null ? null : host.CurrentObjects;
+            if (objs == null || objs.furniture == null) return -1;
+            int found = -1;
+            int best = int.MaxValue;
+            for (int i = 0; i < objs.furniture.Count; i++)
+            {
+                var f = objs.furniture[i];
+                if (f.rail) continue;
+                int dx = f.gridX - tile.X;
+                int dy = f.gridZ - tile.Y;
+                int d = dx * dx + dy * dy;
+                if (d > 1) continue;
+                if (d < best || (d == best && i == host.SelectedProxyIndex))
+                {
+                    best = d;
+                    found = i;
+                }
+            }
+            return found;
+        }
+
         void Canvas_MouseDown(object sender, MouseEventArgs e)
         {
             if (e.Button == MouseButtons.Middle)
@@ -500,15 +530,30 @@ namespace NewEditor.Forms
             {
                 host.PlaceBlankNpcAt((short)t.X, (short)t.Y);
                 dragNpc = -1;
+                dragProxy = -1;
                 dragging = false;
                 InvalidateMap();
                 return;
             }
+            if (e.Button == MouseButtons.Left && (ModifierKeys & Keys.Control) == Keys.Control)
+            {
+                host.PlaceProxyAt(t.X, t.Y);
+                dragNpc = -1;
+                dragProxy = -1;
+                dragging = false;
+                InvalidateMap();
+                return;
+            }
+            bool proxyFirst = host.ProxyTabActive;
+            int proxyHit = (showProxiesBox != null && showProxiesBox.Checked) ? HitProxy(t) : -1;
             int hit = HitNpc(t);
+            if (proxyFirst && proxyHit >= 0) hit = -1;
+            if (!proxyFirst && hit >= 0) proxyHit = -1;
             if (hit >= 0)
             {
                 // Don't recenter — scrolling under a held click was moving the NPC.
                 host.SelectNpc(hit, false);
+                dragProxy = -1;
                 if (e.Button == MouseButtons.Left)
                 {
                     dragNpc = hit;
@@ -516,9 +561,21 @@ namespace NewEditor.Forms
                     canvas.Capture = true;
                 }
             }
+            else if (proxyHit >= 0)
+            {
+                host.SelectProxy(proxyHit);
+                dragNpc = -1;
+                if (e.Button == MouseButtons.Left)
+                {
+                    dragProxy = proxyHit;
+                    dragging = false;
+                    canvas.Capture = true;
+                }
+            }
             else
             {
                 dragNpc = -1;
+                dragProxy = -1;
                 dragging = false;
             }
             InvalidateMap();
@@ -549,7 +606,7 @@ namespace NewEditor.Forms
                 return;
             }
 
-            if (dragNpc < 0 || host == null || host.CurrentObjects == null) return;
+            if ((dragNpc < 0 && dragProxy < 0) || host == null || host.CurrentObjects == null) return;
             if (!dragging)
             {
                 int dx = e.X - dragStartPixel.X;
@@ -559,7 +616,10 @@ namespace NewEditor.Forms
             }
             if (t == lastTile) return;
             lastTile = t;
-            host.MoveNpcTo(dragNpc, (short)t.X, (short)t.Y, persist: false);
+            if (dragNpc >= 0)
+                host.MoveNpcTo(dragNpc, (short)t.X, (short)t.Y, persist: false);
+            else if (dragProxy >= 0)
+                host.MoveProxyTo(dragProxy, t.X, t.Y, persist: false);
             InvalidateMap();
         }
 
@@ -583,8 +643,11 @@ namespace NewEditor.Forms
             }
             if (dragging && dragNpc >= 0 && host != null)
                 host.MoveNpcTo(dragNpc, (short)lastTile.X, (short)lastTile.Y, persist: true);
+            if (dragging && dragProxy >= 0 && host != null)
+                host.MoveProxyTo(dragProxy, lastTile.X, lastTile.Y, persist: true);
             dragging = false;
             dragNpc = -1;
+            dragProxy = -1;
             canvas.Capture = false;
             InvalidateMap();
         }
@@ -677,6 +740,18 @@ namespace NewEditor.Forms
                     if (n.xPosition != t.X || n.yPosition != t.Y) continue;
                     tip += string.Format("\nNPC #{0}  sprite {1}  script {2}  flag {3}  dir {4}",
                         i, n.sprite, n.scriptUsed, n.flag, n.defaultDirection);
+                }
+            }
+            if (objs != null && objs.furniture != null)
+            {
+                for (int i = 0; i < objs.furniture.Count; i++)
+                {
+                    var f = objs.furniture[i];
+                    if (f.rail || f.gridX != t.X || f.gridZ != t.Y) continue;
+                    string face = f.interactibility >= 0 && f.interactibility < OverworldFurniture.InteractNames.Length
+                        ? OverworldFurniture.InteractNames[f.interactibility]
+                        : f.interactibility.ToString();
+                    tip += string.Format("\nProxy #{0}  script {1}  cond {2}  {3}", i, f.scriptUsed, f.condition, face);
                 }
             }
             hoverTip.SetToolTip(canvas, tip);
@@ -816,6 +891,9 @@ namespace NewEditor.Forms
                 }
             }
 
+            if (showProxiesBox != null && showProxiesBox.Checked && objs.furniture != null)
+                DrawProxies(g, objs.furniture);
+
             if (objs.NPCs == null) return;
             int selected = host.SelectedNpcIndex;
 
@@ -844,6 +922,51 @@ namespace NewEditor.Forms
                     bool sel = i == selected;
                     DrawNpcMarker(g, px, py, tilePx, i, n, sel, font, sf);
                 }
+            }
+        }
+
+        void DrawProxies(Graphics g, System.Collections.Generic.IList<OverworldFurniture> proxies)
+        {
+            int selected = host == null ? -1 : host.SelectedProxyIndex;
+            using (var font = new Font("Segoe UI", Math.Max(6f, tilePx * 0.45f), FontStyle.Bold, GraphicsUnit.Pixel))
+            using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+            using (var fill = new SolidBrush(Color.FromArgb(150, 40, 90, 220)))
+            using (var selFill = new SolidBrush(Color.FromArgb(210, 220, 50, 50)))
+            using (var pen = new Pen(Color.FromArgb(230, 210, 225, 255)))
+            using (var selPen = new Pen(Color.White, 2))
+            {
+                for (int i = 0; i < proxies.Count; i++)
+                {
+                    var f = proxies[i];
+                    if (f.rail) continue;
+                    int px = (f.gridX - originX) * tilePx;
+                    int py = (f.gridZ - originY) * tilePx;
+                    bool sel = i == selected;
+                    var rect = new Rectangle(px + 2, py + 2, Math.Max(4, tilePx - 4), Math.Max(4, tilePx - 4));
+                    g.FillRectangle(sel ? selFill : fill, rect);
+                    g.DrawRectangle(sel ? selPen : pen, rect);
+                    g.DrawString(i.ToString(), font, Brushes.White, rect, sf);
+                    DrawProxyFacing(g, rect, f.interactibility, sel ? Color.White : Color.FromArgb(180, 210, 255));
+                }
+            }
+        }
+
+        static void DrawProxyFacing(Graphics g, Rectangle rect, short face, Color c)
+        {
+            // 0 south, 1 west, 2 east, 3 north, 4 all, 5 west/east, 6 north/south
+            using (var pen = new Pen(c, 1))
+            {
+                int cx = rect.X + rect.Width / 2;
+                int cy = rect.Y + rect.Height / 2;
+                if (face == 4)
+                {
+                    g.DrawEllipse(pen, rect.X + 2, rect.Y + 2, Math.Max(2, rect.Width - 4), Math.Max(2, rect.Height - 4));
+                    return;
+                }
+                if (face == 0 || face == 6) g.DrawLine(pen, cx, cy, cx, rect.Bottom - 1);
+                if (face == 3 || face == 6) g.DrawLine(pen, cx, cy, cx, rect.Y + 1);
+                if (face == 1 || face == 5) g.DrawLine(pen, cx, cy, rect.X + 1, cy);
+                if (face == 2 || face == 5) g.DrawLine(pen, cx, cy, rect.Right - 1, cy);
             }
         }
 

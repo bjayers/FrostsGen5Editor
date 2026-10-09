@@ -129,20 +129,31 @@ namespace NewEditor.Data.NARCTypes
             if (bytes.Length <= 8) return;
             int readPos = 8;
 
-            //Furniture
+            // Proxies (CTRMap "furniture"): interaction spots with no NPC.
+            // 20 bytes. Offset 6 is a rail flag, not the start of X.
             furniture = new List<OverworldFurniture>();
             for (int i = 0; i < bytes[4]; i++)
             {
-                furniture.Add(new OverworldFurniture()
+                var fur = new OverworldFurniture()
                 {
                     scriptUsed = (short)HelperFunctions.ReadShort(bytes, readPos),
-                    unknown1 = (short)HelperFunctions.ReadShort(bytes, readPos + 2),
-                    unknown2 = (short)HelperFunctions.ReadShort(bytes, readPos + 4),
-                    xPosition = HelperFunctions.ReadInt(bytes, readPos + 6),
-                    unknown3 = (short)HelperFunctions.ReadShort(bytes, readPos + 10),
-                    yPosition = HelperFunctions.ReadInt(bytes, readPos + 12),
-                    zPosition = HelperFunctions.ReadInt(bytes, readPos + 16)
-                });
+                    condition = (short)HelperFunctions.ReadShort(bytes, readPos + 2),
+                    interactibility = (short)HelperFunctions.ReadShort(bytes, readPos + 4),
+                    rail = HelperFunctions.ReadShort(bytes, readPos + 6) != 0,
+                    height = HelperFunctions.ReadInt(bytes, readPos + 16)
+                };
+                if (fur.rail)
+                {
+                    fur.railLine = (short)HelperFunctions.ReadShort(bytes, readPos + 8);
+                    fur.railFront = (short)HelperFunctions.ReadShort(bytes, readPos + 10);
+                    fur.railSide = (short)HelperFunctions.ReadShort(bytes, readPos + 12);
+                }
+                else
+                {
+                    fur.gridX = HelperFunctions.ReadInt(bytes, readPos + 8);
+                    fur.gridZ = HelperFunctions.ReadInt(bytes, readPos + 12);
+                }
+                furniture.Add(fur);
                 readPos += 20;
             }
 
@@ -263,15 +274,7 @@ namespace NewEditor.Data.NARCTypes
             newBytes.Add((byte)triggers.Count);
 
             foreach (OverworldFurniture o in furniture)
-            {
-                newBytes.AddRange(BitConverter.GetBytes(o.scriptUsed));
-                newBytes.AddRange(BitConverter.GetBytes(o.unknown1));
-                newBytes.AddRange(BitConverter.GetBytes(o.unknown2));
-                newBytes.AddRange(BitConverter.GetBytes(o.xPosition));
-                newBytes.AddRange(BitConverter.GetBytes(o.unknown3));
-                newBytes.AddRange(BitConverter.GetBytes(o.yPosition));
-                newBytes.AddRange(BitConverter.GetBytes(o.zPosition));
-            }
+                newBytes.AddRange(o.ToBytes());
 
             for (int i = 0; i < NPCs.Count; i++)
             {
@@ -369,15 +372,69 @@ namespace NewEditor.Data.NARCTypes
         }
     }
 
+    /// <summary>
+    /// Zone-event furniture. CTRMap calls these proxies: a script the player
+    /// can fire by facing a tile, with no NPC standing there (signs, hidden items).
+    /// Not the 3D prop list. 20 bytes, same layout as CTRMap VFurniture.
+    /// Interactibility: 0 south, 1 west, 2 east, 3 north, 4 all, 5 west/east, 6 north/south.
+    /// </summary>
     public class OverworldFurniture
     {
+        public const int Bytes = 20;
+
         public short scriptUsed;
-        public short unknown1;
-        public short unknown2;
-        public int xPosition;
-        public short unknown3;
-        public int yPosition;
-        public int zPosition;
+        public short condition;
+        public short interactibility;
+        public bool rail;
+        public int gridX;
+        public int gridZ;
+        public short railLine;
+        public short railFront;
+        public short railSide;
+        public int height;
+
+        public static readonly string[] InteractNames =
+        {
+            "South", "West", "East", "North", "All", "West/East", "North/South"
+        };
+
+        public byte[] ToBytes()
+        {
+            byte[] b = new byte[Bytes];
+            WriteShort(b, 0, scriptUsed);
+            WriteShort(b, 2, condition);
+            WriteShort(b, 4, interactibility);
+            WriteShort(b, 6, (short)(rail ? 1 : 0));
+            if (rail)
+            {
+                WriteShort(b, 8, railLine);
+                WriteShort(b, 10, railFront);
+                WriteShort(b, 12, railSide);
+            }
+            else
+            {
+                WriteInt(b, 8, gridX);
+                WriteInt(b, 12, gridZ);
+            }
+            WriteInt(b, 16, height);
+            return b;
+        }
+
+        static void WriteShort(byte[] b, int at, short v)
+        {
+            byte[] raw = BitConverter.GetBytes(v);
+            b[at] = raw[0];
+            b[at + 1] = raw[1];
+        }
+
+        static void WriteInt(byte[] b, int at, int v)
+        {
+            byte[] raw = BitConverter.GetBytes(v);
+            b[at] = raw[0];
+            b[at + 1] = raw[1];
+            b[at + 2] = raw[2];
+            b[at + 3] = raw[3];
+        }
     }
 
     public class OverworldNPC
