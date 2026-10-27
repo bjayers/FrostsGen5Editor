@@ -1,4 +1,4 @@
-﻿using NewEditor.Data.NARCTypes;
+using NewEditor.Data.NARCTypes;
 using NewEditor.Forms;
 using System;
 using System.Collections.Generic;
@@ -31,6 +31,7 @@ namespace NewEditor.Data
         const int Y9_PointerLocation = 0x50;
         const int Y9_SizeLocation = 0x54;
         const int Banner_PointerLocation = 0x68;
+        // Banner size is version-dependent: 0x840 (DS), 0x940/0xA40 (extended titles), 0x23C0 (DSi animated 0x0103)
         const int End_PointerLocation = 0x1F0;
 
         /* Order
@@ -192,9 +193,28 @@ namespace NewEditor.Data
             result.y9 = new Y9Table(b);
             result.OverlayCount = result.y9.entries.Count;
 
-            b = new byte[2112];
-            fs.Position = HelperFunctions.ReadInt(result.romHeader, Banner_PointerLocation);
-            fs.Read(b, 0, b.Length);
+            int bannerOffset = HelperFunctions.ReadInt(result.romHeader, Banner_PointerLocation);
+            int bannerSize = 0x840; // plain DS default
+            if (bannerOffset > 0 && bannerOffset + 2 <= fs.Length)
+            {
+                fs.Position = bannerOffset;
+                byte[] verBytes = new byte[2];
+                fs.Read(verBytes, 0, 2);
+                int version = verBytes[0] | (verBytes[1] << 8);
+                if (version == 0x0103) bannerSize = 0x23C0;      // DSi animated
+                else if (version >= 3) bannerSize = 0x1240;
+                else if (version == 2) bannerSize = 0x940;
+                // else 0x840
+                // Cap to remaining file length
+                if (bannerOffset + bannerSize > fs.Length)
+                    bannerSize = (int)(fs.Length - bannerOffset);
+            }
+            b = new byte[bannerSize];
+            if (bannerOffset > 0 && bannerSize > 0)
+            {
+                fs.Position = bannerOffset;
+                fs.Read(b, 0, b.Length);
+            }
             result.banner = new List<byte>(b);
 
             //Read FAT data for overlays, narcs, etc
@@ -523,3 +543,4 @@ namespace NewEditor.Data
         }
     }
 }
+

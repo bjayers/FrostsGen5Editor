@@ -1,11 +1,3 @@
-# What's included in my fork #
-
-This fork adds the ability to import and export a json file of the open rom's encounter tables from all locations, including all seasons, encounter types (grass, surf, etc.), levels, rates, and forms.  For use with an external editor to make planning encounter tables easier for hack designers.
-
-New features supported by AI (Grok 4.6); reviewed and revised manually by me.
-
----
-
 # Frost's Gen 5 Editor #
 
 This is a general purpose editor made to handle all of the most important rom hacking features in a single user friendly package. It fully supports black 2 and white 2 roms and mostly supports black and white roms with a few features missing.
@@ -38,7 +30,3 @@ If you have any other issues with the editor, you can join my Discord server to 
 ![image](https://github.com/user-attachments/assets/fbfe3dd3-554e-4078-a4a1-62c691d58681)
 ![image](https://github.com/user-attachments/assets/feb7cb36-e8e9-46eb-9327-9b78ffda181e)
 ![image](https://github.com/user-attachments/assets/f1dcf04d-e7d0-49d1-81e0-410e4222cee7)
-
-## Proxies (interaction spots)
-
-The overworld editor's Proxies tab edits zone-event furniture: tiles the player can interact with without an NPC (signs, hidden items). CTRMap calls the same list the Proxy tool. They are drawn as blue squares on the map. Ctrl+click places one; drag moves a grid proxy. Facing matches CTRMap: South, West, East, North, All, West/East, North/South. Script 0 is the hidden-item handler: the editor leaves it at 0 and edits the item in the condition field. Warp markers use Exit Z as map Y. Applying a trigger refreshes the map.
