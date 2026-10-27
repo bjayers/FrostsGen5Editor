@@ -164,6 +164,21 @@ namespace NewEditor.Data
             return src;
         }
 
+        /// <summary>
+        /// Find the digest key in an edited ROM's ARM9 that reproduces the clean
+        /// donor ROM's first block hash. Pokeweb's DSi repair makes the same check
+        /// before it trusts a donor's DSi data for an edited ROM. Null if none does.
+        /// </summary>
+        public static HmacSha1 KeyForDonor(byte[] arm9, byte[] donor)
+        {
+            int sectorOffset = (int)ReadU32(donor, 0x1F0), blockOffset = (int)ReadU32(donor, 0x1F8);
+            int blockSectors = (int)ReadU32(donor, 0x204);
+            if (!PowerOfTwo(blockSectors) || blockSectors > 1024) return null;
+            if (!Span(donor, sectorOffset, blockSectors * 20) || !Span(donor, blockOffset, 20)) return null;
+            byte[] decompressed = BLZDecoder.BLZ_DecodePub((byte[])arm9.Clone()) ?? arm9;
+            return FindHmacKey(decompressed, Slice(donor, sectorOffset, blockSectors * 20), blockSectors, Slice(donor, blockOffset, 20));
+        }
+
         static HmacSha1 FindHmacKey(byte[] arm9, byte[] sectorTable, int blockSectors, byte[] expected)
         {
             byte[] probe = Slice(sectorTable, 0, blockSectors * 20);

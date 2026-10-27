@@ -215,6 +215,49 @@ namespace NewEditor.Forms
             };
         }
 
+        /// <summary>
+        /// Build the loaded ROM and write it to path. The ROM is built in full
+        /// before the file is touched, then written to a temporary file that
+        /// replaces path, so a failure leaves any existing file as it was. When
+        /// the DSi data can't be kept, asks whether to restore it from a clean
+        /// ROM, save for DS mode only, or cancel. Returns false if cancelled;
+        /// throws if building or writing fails.
+        /// </summary>
+        public static bool SaveRomTo(string path)
+        {
+            byte[] data = fileSystem.BuildRom();
+            while (fileSystem.DsiProblem != null)
+            {
+                DialogResult choice = MessageBox.Show(fileSystem.DsiProblem +
+                    "\n\nYes: restore the DSi data from a clean, unedited copy of this game." +
+                    "\nNo: save for DS mode only (the game won't start in DSi mode)." +
+                    "\nCancel: don't save.", "DSi data", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
+                if (choice == DialogResult.Cancel) return false;
+                if (choice == DialogResult.No)
+                {
+                    fileSystem.DsModeOnly = true;
+                    break;
+                }
+                OpenFileDialog donorPrompt = new OpenFileDialog { Filter = "Nds Roms|*.nds", Title = "Choose a clean, unedited ROM of this game" };
+                if (donorPrompt.ShowDialog() != DialogResult.OK) continue;
+                string refused = fileSystem.RestoreDsiFromDonor(File.ReadAllBytes(donorPrompt.FileName));
+                if (refused != null)
+                {
+                    MessageBox.Show(refused, "DSi data", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    continue;
+                }
+                data = fileSystem.BuildRom();
+            }
+
+            string dir = Path.GetDirectoryName(Path.GetFullPath(path));
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
+            string temp = path + ".saving";
+            File.WriteAllBytes(temp, data);
+            if (File.Exists(path)) File.Replace(temp, path, null);
+            else File.Move(temp, path);
+            return true;
+        }
+
         public void SavePlaytestButton(object sender, EventArgs e)
         {
             string path = playtestPathBox == null ? "" : (playtestPathBox.Text ?? "").Trim();
@@ -232,11 +275,11 @@ namespace NewEditor.Forms
             statusText.Text = "Saving playtest";
             try
             {
-                string dir = Path.GetDirectoryName(path);
-                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-                    Directory.CreateDirectory(dir);
-                byte[] data = fileSystem.BuildRom();
-                File.WriteAllBytes(path, data);
+                if (!SaveRomTo(path))
+                {
+                    statusText.Text = "Playtest save cancelled - " + DateTime.Now.StatusText();
+                    return;
+                }
                 statusText.Text = "Saved playtest to " + path + " - " + DateTime.Now.StatusText();
             }
             catch (Exception ex)
@@ -442,22 +485,21 @@ namespace NewEditor.Forms
             {
                 taskProgressBar.Value = 0;
                 loadedRomPath = prompt.FileName;
-                FileStream fileStream = null;
                 try
                 {
-                    fileStream = File.OpenWrite(loadedRomPath);
+                    if (!SaveRomTo(loadedRomPath))
+                    {
+                        statusText.Text = "Save cancelled - " + DateTime.Now.StatusText();
+                        return;
+                    }
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show("Unable to save rom");
+                    MessageBox.Show("Unable to save rom. Any existing file was left unchanged.\n" + ex.Message);
 
                     statusText.Text = "Failed to save rom - " + DateTime.Now.StatusText();
                     return;
                 }
-                fileStream.SetLength(0);
-                byte[] data = fileSystem.BuildRom();
-                fileStream.Write(data, 0, data.Length);
-                fileStream.Close();
                 taskProgressBar.Value = taskProgressBar.Maximum;
                 statusText.Text = "Saved rom to " + prompt.FileName + " - " + DateTime.Now.StatusText();
             }
@@ -497,9 +539,39 @@ namespace NewEditor.Forms
             }
         }
 
+        /// <summary>
+        /// Black and White 1 are blocked: their archive IDs make loading fail.
+        /// Reads only the header's game code (IRB / IRA).
+        /// </summary>
+        static bool IsBlackWhite1(string path, bool fromFolder)
+        {
+            try
+            {
+                string headerPath = fromFolder ? Path.Combine(path, "header.bin") : path;
+                byte[] code = new byte[4];
+                using (FileStream stream = File.OpenRead(headerPath))
+                {
+                    stream.Position = 0x0C;
+                    if (stream.Read(code, 0, 4) != 4) return false;
+                }
+                string text = Encoding.ASCII.GetString(code);
+                return text.StartsWith("IRB") || text.StartsWith("IRA");
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public async void LoadRom(bool fromFolder = false)
         {
             if (loadedRomPath == "") return;
+            if (IsBlackWhite1(loadedRomPath, fromFolder))
+            {
+                MessageBox.Show("Black and White ROMs aren't supported by this build of the editor. Open a Black 2 or White 2 ROM.");
+                statusText.Text = "Black and White ROMs aren't supported - " + DateTime.Now.StatusText();
+                return;
+            }
 
             openRomButton.Enabled = false;
             loadFromFolderButton.Enabled = false;

@@ -1100,6 +1100,7 @@ namespace NewEditor.Forms
             if (onlyLine < 0) return;
             var rail = MainEditor.railNarc.GetRail(host.CurrentRailIndex());
             if (rail == null || onlyLine >= rail.lines.Count) return;
+            if (!MainEditor.railNarc.CanEdit(host.CurrentRailIndex())) { railHeightLabel.Text = "Unrecognized rail layout"; return; }
             int half = rail.hasSky ? rail.lines.Count / 2 : rail.lines.Count;
             if (onlyLine < half) { railHeightLabel.Text = "Ground (locked)"; return; }
             var ln = rail.lines[onlyLine];

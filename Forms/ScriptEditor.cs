@@ -503,20 +503,15 @@ namespace NewEditor.Forms
                 LoadScriptFile(sender, e);
             }
 
-            FileStream fileStream = null;
             try
             {
-                fileStream = File.OpenWrite(quickBuildRom);
+                if (!MainEditor.SaveRomTo(quickBuildRom)) return;
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Unable to save rom");
+                MessageBox.Show("Unable to save rom. Any existing file was left unchanged.\n" + ex.Message);
                 return;
             }
-            fileStream.SetLength(0);
-            byte[] data = MainEditor.fileSystem.BuildRom();
-            fileStream.Write(data, 0, data.Length);
-            fileStream.Close();
             MessageBox.Show("Rom saved to " + quickBuildRom);
         }
     }

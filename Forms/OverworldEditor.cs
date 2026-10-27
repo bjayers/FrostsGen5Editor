@@ -172,6 +172,7 @@ namespace NewEditor.Forms
             if (idx < 0) { railStatusLabel.Text = "No rail for zone " + CurrentZone.index; return; }
             var rail = MainEditor.railNarc.GetRail(idx);
             if (rail == null) { railStatusLabel.Text = "No rail data at " + idx; return; }
+            if (!MainEditor.railNarc.CanEdit(idx)) { railStatusLabel.Text = "Rail " + idx + " has an unrecognized layout; it is left unedited"; return; }
             int fx = (int)(railHeightBox.Value * 0x10000);
             int ground = rail.groundLineCount > 0 ? rail.groundLineCount : rail.lines.Count;
             rail.AddLayer(fx);
@@ -189,6 +190,7 @@ namespace NewEditor.Forms
             if (idx < 0) return;
             var rail = MainEditor.railNarc.GetRail(idx);
             if (rail == null) return;
+            if (!MainEditor.railNarc.CanEdit(idx)) { railStatusLabel.Text = "Rail " + idx + " has an unrecognized layout; it is left unedited"; return; }
             if (railFromBox.Value == 0) { railStatusLabel.Text = "Refusing to remove ground"; return; }
             int n = rail.RemoveLayer(railFromBox.Value);
             MainEditor.railNarc.WriteData();
@@ -203,6 +205,7 @@ namespace NewEditor.Forms
             if (idx < 0) return;
             var rail = MainEditor.railNarc.GetRail(idx);
             if (rail == null) return;
+            if (!MainEditor.railNarc.CanEdit(idx)) { railStatusLabel.Text = "Rail " + idx + " has an unrecognized layout; it is left unedited"; return; }
             // Shift from the map's current filter height to the box value
             decimal from = railFromBox.Value;
             decimal to = railHeightBox.Value;

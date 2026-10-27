@@ -36,6 +36,7 @@ namespace NewEditor.Forms
             this.fileText = new System.Windows.Forms.Label();
             this.importButton = new System.Windows.Forms.Button();
             this.extractButton = new System.Windows.Forms.Button();
+            this.renameButton = new System.Windows.Forms.Button();
             this.compressOverlayButton = new System.Windows.Forms.Button();
             this.packNarcButton = new System.Windows.Forms.Button();
             this.unpackNarcButton = new System.Windows.Forms.Button();
@@ -90,6 +91,17 @@ namespace NewEditor.Forms
             this.extractButton.Text = "Extract";
             this.extractButton.UseVisualStyleBackColor = true;
             this.extractButton.Click += new System.EventHandler(this.extractButton_Click);
+            // 
+            // renameButton
+            // 
+            this.renameButton.Enabled = false;
+            this.renameButton.Location = new System.Drawing.Point(320, 417);
+            this.renameButton.Name = "renameButton";
+            this.renameButton.Size = new System.Drawing.Size(80, 32);
+            this.renameButton.TabIndex = 9;
+            this.renameButton.Text = "Rename";
+            this.renameButton.UseVisualStyleBackColor = true;
+            this.renameButton.Click += new System.EventHandler(this.renameButton_Click);
             // 
             // compressOverlayButton
             // 
@@ -156,6 +168,7 @@ namespace NewEditor.Forms
             this.Controls.Add(this.packNarcButton);
             this.Controls.Add(this.compressOverlayButton);
             this.Controls.Add(this.extractButton);
+            this.Controls.Add(this.renameButton);
             this.Controls.Add(this.importButton);
             this.Controls.Add(this.fileText);
             this.Controls.Add(this.fileTree);
@@ -175,6 +188,7 @@ namespace NewEditor.Forms
         private System.Windows.Forms.Label fileText;
         private System.Windows.Forms.Button importButton;
         private System.Windows.Forms.Button extractButton;
+        private System.Windows.Forms.Button renameButton;
         private System.Windows.Forms.Button compressOverlayButton;
         private System.Windows.Forms.Button packNarcButton;
         private System.Windows.Forms.Button unpackNarcButton;

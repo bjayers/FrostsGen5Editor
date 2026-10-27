@@ -39,6 +39,62 @@ namespace NewEditor.Forms
             {
                 AddNode(str, true);
             }
+
+            fileTree.LabelEdit = true;
+            fileTree.BeforeLabelEdit += fileTree_BeforeLabelEdit;
+            fileTree.AfterLabelEdit += fileTree_AfterLabelEdit;
+            fileTree.KeyDown += (s, e) =>
+            {
+                if (e.KeyCode == Keys.F2 && renameButton.Enabled) fileTree.SelectedNode.BeginEdit();
+            };
+        }
+
+        /// <summary>
+        /// Only files under patches/ can be renamed. Everything else is opened by
+        /// its exact name: the editor's own archives under a/, and runtime data
+        /// such as following/.
+        /// </summary>
+        bool Renamable(TreeNode node) =>
+            node != null && node.Nodes.Count == 0 && reverseNodes.TryGetValue(node, out string path) &&
+            path.StartsWith("patches/") && fnt.reverseFileNames.ContainsKey(path);
+
+        private void renameButton_Click(object sender, EventArgs e)
+        {
+            if (Renamable(fileTree.SelectedNode)) fileTree.SelectedNode.BeginEdit();
+        }
+
+        private void fileTree_BeforeLabelEdit(object sender, NodeLabelEditEventArgs e)
+        {
+            if (!Renamable(e.Node)) e.CancelEdit = true;
+        }
+
+        private void fileTree_AfterLabelEdit(object sender, NodeLabelEditEventArgs e)
+        {
+            if (e.Label == null) return; // Edit cancelled
+            string oldPath = reverseNodes[e.Node];
+            string newName = e.Label;
+            string oldName = oldPath.Substring(oldPath.LastIndexOf('/') + 1);
+            if (newName == oldName) { e.CancelEdit = true; return; }
+            if (oldName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) && !newName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) &&
+                MessageBox.Show("Patches are loaded as .dll files. Rename without the .dll extension anyway?", "Rename", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            {
+                e.CancelEdit = true;
+                return;
+            }
+            string refused = fnt.RenameFile(oldPath, newName);
+            if (refused != null)
+            {
+                e.CancelEdit = true;
+                MessageBox.Show(refused, "Rename", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            string newPath = oldPath.Substring(0, oldPath.LastIndexOf('/') + 1) + newName;
+            nodes.Remove(oldPath);
+            nodes[newPath] = e.Node;
+            reverseNodes[e.Node] = newPath;
+            // The tree applies e.Label to the node after this handler returns.
+            fileTree_AfterSelect(fileTree, new TreeViewEventArgs(e.Node));
+            statusText.Text = "Renamed " + oldName + " to " + newName + ". Save the ROM to keep it.";
         }
 
         void AddNode(string path, bool leafNode)
@@ -68,6 +124,7 @@ namespace NewEditor.Forms
 
         private void fileTree_AfterSelect(object sender, TreeViewEventArgs e)
         {
+            renameButton.Enabled = Renamable(fileTree.SelectedNode);
             if (fileTree.SelectedNode != null && fileTree.SelectedNode.Nodes.Count == 0)
             {
                 if (fileTree.SelectedNode.Text.Contains("ov_"))

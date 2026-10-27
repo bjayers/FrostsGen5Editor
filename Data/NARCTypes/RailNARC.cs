@@ -33,12 +33,27 @@ namespace NewEditor.Data.NARCTypes
 
         public override void WriteData()
         {
+            // Only files whose bytes changed are written back, so an unedited
+            // or unrecognized file stays exactly as it was loaded.
             int half = numFileEntries / 2;
             for (int i = 0; i < rails.Count && i < half; i++)
-                ReplaceFileEntry(i, new List<byte>(rails[i].ToBytes()));
+                ReplaceIfChanged(i, rails[i].ToBytes());
             for (int i = 0; i < tilemaps.Count && i < half; i++)
-                ReplaceFileEntry(half + i, new List<byte>(tilemaps[i].ToBytes()));
+                ReplaceIfChanged(half + i, tilemaps[i].ToBytes());
             base.WriteData();
+        }
+
+        void ReplaceIfChanged(int fileID, byte[] bytes)
+        {
+            List<byte> current = GetFileEntry(fileID);
+            if (current == null || bytes == null) return;
+            if (current.Count == bytes.Length)
+            {
+                bool same = true;
+                for (int i = 0; i < bytes.Length && same; i++) same = current[i] == bytes[i];
+                if (same) return;
+            }
+            ReplaceFileEntry(fileID, new List<byte>(bytes));
         }
 
         public RailFile GetRail(int index)
@@ -52,6 +67,17 @@ namespace NewEditor.Data.NARCTypes
             if (index < 0 || index >= tilemaps.Count) return null;
             return tilemaps[index];
         }
+
+        /// <summary>
+        /// Whether the rail and its tilemap can be rebuilt on save. Files that
+        /// fail this are kept as loaded, so edits to them would not be saved.
+        /// </summary>
+        public bool CanEdit(int index)
+        {
+            var rail = GetRail(index);
+            var tilemap = GetTilemap(index);
+            return rail != null && rail.rebuildable && (tilemap == null || tilemap.rebuildable);
+        }
     }
 
     public class RailFile
@@ -62,6 +88,10 @@ namespace NewEditor.Data.NARCTypes
         public List<RailCurve> curves = new List<RailCurve>();
         public int originalLineCount;
         public bool hasSky;
+        // Set when the file is the five-section RL container the rebuild in
+        // ToBytes understands, with every section an exact number of records.
+        // Anything else is saved as its original bytes.
+        public bool rebuildable;
 
         public static RailFile Parse(byte[] data)
         {
@@ -72,16 +102,20 @@ namespace NewEditor.Data.NARCTypes
             if (data[0] != (byte)'R' || data[1] != (byte)'L') return f;
 
             int count = BitConverter.ToUInt16(data, 2);
-            if (count < 5) return f;
+            if (count < 5 || 4 + count * 4 > data.Length) return f;
             int[] offs = new int[count + 1];
             for (int i = 0; i < count; i++)
                 offs[i] = BitConverter.ToInt32(data, 4 + i * 4);
             offs[count] = data.Length;
+            for (int i = 0; i < count; i++)
+                if (offs[i] < 4 + count * 4 || offs[i] > offs[i + 1]) return f;
 
             f.points = ParsePoints(data, offs[1], offs[2]);
             f.lines = ParseLines(data, offs[2], offs[3]);
             f.curves = ParseCurves(data, offs[4], offs[5]);
             f.originalLineCount = f.lines.Count;
+            f.rebuildable = count == 5 &&
+                (offs[2] - offs[1]) % 0x70 == 0 && (offs[3] - offs[2]) % 0x48 == 0 && (offs[5] - offs[4]) % 0x24 == 0;
             return f;
         }
 
@@ -332,7 +366,7 @@ namespace NewEditor.Data.NARCTypes
         {
             // Rebuild container: magic, count=5, offsets, then sections.
             // Sections: 0=info (copy from original), 1=points, 2=lines, 3=cameras (copy), 4=curves.
-            if (raw == null || raw.Length < 16) return raw ?? new byte[0];
+            if (!rebuildable) return raw ?? new byte[0];
             int count = BitConverter.ToUInt16(raw, 2);
             int[] oldOffs = new int[count + 1];
             for (int i = 0; i < count; i++)
@@ -405,6 +439,9 @@ namespace NewEditor.Data.NARCTypes
     {
         public List<byte[]> blocks = new List<byte[]>();
         public byte[] raw;
+        // Set when every declared block parsed and nothing follows them;
+        // otherwise ToBytes returns the original bytes.
+        public bool rebuildable;
 
         public static RailTilemap Parse(byte[] data)
         {
@@ -416,6 +453,7 @@ namespace NewEditor.Data.NARCTypes
             {
                 int w = BitConverter.ToInt16(data, pos);
                 int h = BitConverter.ToInt16(data, pos + 2);
+                if (w < 0 || h < 0) break;
                 int size = 4 + w * h * 4;
                 if (pos + size > data.Length) break;
                 var b = new byte[size];
@@ -423,6 +461,7 @@ namespace NewEditor.Data.NARCTypes
                 t.blocks.Add(b);
                 pos += size;
             }
+            t.rebuildable = count >= 0 && t.blocks.Count == count && pos == data.Length;
             return t;
         }
 
@@ -459,6 +498,7 @@ namespace NewEditor.Data.NARCTypes
 
         public byte[] ToBytes()
         {
+            if (!rebuildable) return raw ?? new byte[0];
             var outb = new List<byte>();
             outb.AddRange(BitConverter.GetBytes(blocks.Count));
             foreach (var b in blocks) outb.AddRange(b);

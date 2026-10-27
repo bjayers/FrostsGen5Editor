@@ -61,6 +61,18 @@ namespace NewEditor.Data
         public List<byte> romEnder;
         public string SourceRomPath;
         DsiDigestSource dsiSource;
+        /// <summary>
+        /// Set by BuildRom when the DSi data could not be kept: the loaded ROM's
+        /// DSi data was missing or damaged, or the rebuild failed. The ROM
+        /// BuildRom then returned is DS mode only, laid out the way a ROM without
+        /// DSi data always was. Null when the DSi data was kept, when the ROM has
+        /// none, or once DsModeOnly is set.
+        /// </summary>
+        public string DsiProblem { get; private set; }
+        /// <summary>Save this ROM without DSi data and stop reporting it.</summary>
+        public bool DsModeOnly;
+        bool DsiEnhanced => romHeader != null && romHeader.Count > 0x12 && romHeader[0x12] == 2;
+        int lastSectionEnd;
 
         public List<List<byte>> overlays;
         public List<object> files;
@@ -205,7 +217,7 @@ namespace NewEditor.Data
                 fs.Read(verBytes, 0, 2);
                 int version = verBytes[0] | (verBytes[1] << 8);
                 if (version == 0x0103) bannerSize = 0x23C0;      // DSi animated
-                else if (version >= 3) bannerSize = 0x1240;
+                else if (version >= 3) bannerSize = 0xA40;
                 else if (version == 2) bannerSize = 0x940;
                 // else 0x840
                 // Cap to remaining file length
@@ -472,6 +484,64 @@ namespace NewEditor.Data
             }
         }
 
+        /// <summary>
+        /// Restore the DSi data from a clean ROM of the same game, the way
+        /// Pokeweb's DSi ROM Repair does. This ROM keeps its own DS header (up to
+        /// 0x180), code and files; the DSi header, DSi programs and integrity
+        /// data come from the donor, and the next save rebuilds the digests for
+        /// this ROM's content. Returns null on success, or why the donor was
+        /// refused, in which case nothing is changed.
+        /// </summary>
+        public string RestoreDsiFromDonor(byte[] donor)
+        {
+            if (romHeader == null || romHeader.Count < 0x1000) return "This ROM's header is too short to hold DSi data.";
+            if (donor == null || donor.Length < 0x4000) return "The selected file is not a DS ROM.";
+            string code = Encoding.ASCII.GetString(romHeader.GetRange(0x0C, 4).ToArray());
+            string game = code.StartsWith("IRE") ? "Black 2" : code.StartsWith("IRD") ? "White 2" : null;
+            if (game == null || romHeader[0x12] != 2) return "DSi repair supports Black 2 and White 2 only.";
+            if (Encoding.ASCII.GetString(donor, 0x0C, 4) != code || donor[0x12] != 2 || donor[0x1E] != romHeader[0x1E])
+                return "The clean ROM must match this ROM's game, language and revision. Choose a clean " + game + " ROM.";
+            int Header(int at) => HelperFunctions.ReadInt(romHeader, at);
+            int Donor(int at) => HelperFunctions.ReadInt(donor, at);
+            if ((Header(0x84) == 0 ? 0x4000 : Header(0x84)) != 0x4000 || (Donor(0x84) == 0 ? 0x4000 : Donor(0x84)) != 0x4000)
+                return "This ROM uses an unrecognized header layout, so its DS code could overlap the restored DSi data.";
+            foreach (int field in new[] { 0x24, 0x28, 0x34, 0x38 })
+                if (Header(field) != Donor(field))
+                    return "This ROM changes its program addresses, so the clean ROM's DSi programs can't be matched to it.";
+            bool mappingMissing = true, mappingPlaceholders = true, digestsMissing = true, mappingSame = true;
+            for (int i = 0x180; i < 0x1C0; i++)
+            {
+                if (romHeader[i] != 0) mappingMissing = false;
+                if (romHeader[i] > 1) mappingPlaceholders = false;
+                if (romHeader[i] != donor[i]) mappingSame = false;
+            }
+            for (int field = 0x1F0; field <= 0x204; field += 4)
+                if (Header(field) != 0) digestsMissing = false;
+            // Some stripped ROMs hold 0/1 placeholder bytes instead of the mapping;
+            // accept that only when no digest tables remain either.
+            if (!mappingSame && !mappingMissing && !(mappingPlaceholders && digestsMissing))
+                return "This ROM has an unrecognized DSi memory mapping.";
+            if ((donor[0x1C] & 6) == 6)
+                for (int i = 0; i < 16; i++)
+                    if (romHeader[i] != donor[i]) return "The clean ROM uses debug encryption tied to its own title.";
+
+            DsiDigestSource source;
+            try { source = DsiDigest.TryRead(donor); }
+            catch { source = null; }
+            if (source == null) return "The clean ROM's DSi data is missing or doesn't check out. Choose an unedited " + game + " ROM.";
+            if (source.Arm9iOffsetInRegion < 0 || source.Arm7iOffsetInRegion < 0 ||
+                (Donor(0x224) != 0 && source.Modcrypt1OffsetInRegion < 0) || (Donor(0x22C) != 0 && source.Modcrypt2OffsetInRegion < 0))
+                return "The clean ROM's DSi programs are incomplete. Choose an unedited " + game + " ROM.";
+            if (DsiDigest.KeyForDonor(arm9.ToArray(), donor) == null)
+                return "This ROM's code no longer carries a digest key that matches the clean ROM, so its DSi data can't be restored.";
+
+            for (int i = 0x180; i < 0x1000; i++) romHeader[i] = donor[i];
+            romHeader[0x1C] = (byte)((romHeader[0x1C] & ~6) | (donor[0x1C] & 6));
+            dsiSource = source;
+            DsModeOnly = false;
+            return null;
+        }
+
         public byte[] BuildRom()
         {
             List<byte> romBytes = new List<byte>();
@@ -510,7 +580,6 @@ namespace NewEditor.Data
             AddSection(romBytes, banner);
             foreach (NARC n in narcs) n.WriteData();
 
-
             int pos = OverlayCount * 8;
             int file = 0;
             while (pos < fat.Count)
@@ -523,44 +592,47 @@ namespace NewEditor.Data
                 file++;
             }
 
+            // The end of the last file, before its padding.
+            int contentEnd = lastSectionEnd;
+
             // When we have a DSi source, RebuildDsi places the digests and the TWL
             // region itself. The old romEnder already contains that TWL span, so
             // appending it here would double-count it and grow the ROM by ~6–7 MB.
-            if (dsiSource == null)
+            DsiProblem = null;
+            if (dsiSource != null && !DsModeOnly)
             {
-                HelperFunctions.WriteInt(romHeader, End_PointerLocation, romEnder.Count == 0 ? 0 : romBytes.Count);
-                AddSection(romBytes, romEnder);
+                try { return RebuildDsi(FinishRom(romBytes), contentEnd); }
+                catch (Exception ex) { DsiProblem = "The DSi data could not be rebuilt: " + ex.Message; }
             }
+            else if (DsiEnhanced && !DsModeOnly)
+                DsiProblem = "This ROM's DSi data is missing or damaged, so it can't be kept.";
 
+            // DS mode only: the loaded data from the digest tables on is kept as it was.
+            HelperFunctions.WriteInt(romHeader, End_PointerLocation, romEnder.Count == 0 ? 0 : romBytes.Count);
+            AddSection(romBytes, romEnder);
+            return FinishRom(romBytes);
+        }
+
+        byte[] FinishRom(List<byte> romBytes)
+        {
             //Rewrite header and FAT after updating values
             romBytes.RemoveRange(0, romHeader.Count);
             romBytes.InsertRange(0, romHeader);
 
             romBytes.RemoveRange(HelperFunctions.ReadInt(romHeader, FAT_PointerLocation), fat.Count);
             romBytes.InsertRange(HelperFunctions.ReadInt(romHeader, FAT_PointerLocation), fat);
-
-            byte[] built = romBytes.ToArray();
-            if (dsiSource != null)
-            {
-                try { built = RebuildDsi(built); }
-                catch (Exception ex)
-                {
-                    System.Windows.Forms.MessageBox.Show("DSi digest rebuild failed; saving without DSi integrity.\n" + ex.Message);
-                }
-            }
-            return built;
+            return romBytes.ToArray();
         }
 
-        byte[] RebuildDsi(byte[] native)
+        byte[] RebuildDsi(byte[] native, int contentEnd)
         {
             // Native content is already written. Plan digests after it, then append the preserved TWL region.
-            int fileEnd = native.Length;
-            // Trim trailing 0xFF padding so the digest starts at the real content end
-            while (fileEnd > 0 && native[fileEnd - 1] == 0xFF) fileEnd--;
-            fileEnd = (fileEnd + 3) & ~3;
+            // The digests start after the last file's real end. Trimming trailing 0xFF
+            // instead could start them inside a file that ends in 0xFF bytes.
+            int fileEnd = (contentEnd + 3) & ~3;
 
             var layout = DsiDigest.Plan(dsiSource, fileEnd);
-            if (layout == null) return native;
+            if (layout == null) throw new InvalidOperationException("the digest tables do not fit this ROM's layout.");
 
             int twlStart = ((layout.End + 0x7FFFF) / 0x80000) * 0x80000;
             int total = twlStart + dsiSource.RegionSize;
@@ -661,6 +733,7 @@ namespace NewEditor.Data
         void AddSection(List<byte> romBytes, IEnumerable<byte> section)
         {
             romBytes.AddRange(section);
+            lastSectionEnd = romBytes.Count;
             while (romBytes.Count % 0x200 != 0) romBytes.Add(0xFF);
         }
     }
