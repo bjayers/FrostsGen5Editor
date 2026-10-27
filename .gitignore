@@ -8,3 +8,7 @@
 # Visual Studio cache and NuGet restore output (restored on build)
 .vs/
 packages/
+
+# Local pull-and-build scripts
+update-and-build.bat
+update-and-build.ps1
