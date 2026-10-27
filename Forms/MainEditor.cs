@@ -47,6 +47,9 @@ namespace NewEditor.Forms
         public static int trainerDataNarcID = -1;
         public static int trainerPokeNarcID = -1;
         public static int overworldsNarcID = -1;
+        public static int cameraNarcID = -1;
+        public static int railNarcID = -1;
+        public static int zoneNoGridNarcID = -1;
         public static int encounterNarcID = -1;
         public static int pokemartNarcID = -1;
         public static int pokemartItemCountNarcID = -1;
@@ -85,6 +88,7 @@ namespace NewEditor.Forms
         public static TrainerDataNARC trainerNarc;
         public static TrainerPokeNARC trainerPokeNarc;
         public static OverworldObjectsNARC overworldsNarc;
+        public static RailNARC railNarc;
         public static EncounterNARC encounterNarc;
         public static PokemartNARC pokemartNarc;
         public static PokemartItemCountNARC pokemartItemCountNarc;
@@ -321,6 +325,9 @@ namespace NewEditor.Forms
                 trainerDataNarcID = VersionConstants.BW2_TrainerDataNARCID;
                 trainerPokeNarcID = VersionConstants.BW2_TrainerPokemonNARCID;
                 overworldsNarcID = VersionConstants.BW2_OverworldsNARCID;
+                cameraNarcID = VersionConstants.BW2_CameraAreaNARCID;
+                railNarcID = VersionConstants.BW2_RailDataNARCID;
+                zoneNoGridNarcID = VersionConstants.BW2_ZoneNoGridHeadersNARCID;
                 encounterNarcID = VersionConstants.BW2_EncountersNARCID;
                 pokemartNarcID = VersionConstants.BW2_PokemartNARCID;
                 pokemartItemCountNarcID = VersionConstants.BW2_PokemartItemCountNARCID;
@@ -561,8 +568,9 @@ namespace NewEditor.Forms
                     {
                         FileStream fileStream = File.OpenRead(loadedRomPath);
                         fileSystem = NDSFileSystem.FromRom(fileStream, true);
-
                         fileStream.Close();
+                        fileSystem.SourceRomPath = loadedRomPath;
+                        fileSystem.CaptureDsiSource();
                     }
                 }
                 catch (Exception ex)
@@ -624,6 +632,7 @@ namespace NewEditor.Forms
             trainerNarc = fileSystem.narcs[trainerDataNarcID] as TrainerDataNARC;
             trainerPokeNarc = fileSystem.narcs[trainerPokeNarcID] as TrainerPokeNARC;
             overworldsNarc = fileSystem.narcs[overworldsNarcID] as OverworldObjectsNARC;
+            if (railNarcID >= 0) railNarc = fileSystem.narcs[railNarcID] as RailNARC;
             encounterNarc = fileSystem.narcs[encounterNarcID] as EncounterNARC;
             xpCurveNarc = fileSystem.narcs[xpCurveNarcID] as XPCurveNARC;
             AIScriptNarc = fileSystem.narcs[AIScriptNarcID] as AIScriptNARC;

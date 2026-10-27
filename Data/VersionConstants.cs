@@ -41,6 +41,9 @@ namespace NewEditor.Data
         public const int BW2_KeyboardLayoutNARCID = 120;
         public const int BW2_EggMoveNARCID = 124;
         public const int BW2_OverworldsNARCID = 126;
+        public const int BW2_CameraAreaNARCID = 156;
+        public const int BW2_RailDataNARCID = 78;
+        public const int BW2_ZoneNoGridHeadersNARCID = 110;
         public const int BW2_EncountersNARCID = 127;
         public const int BW2_AIScriptNARCID = 169;
         public const int BW2_HiddenGrottoNARCID = 273;

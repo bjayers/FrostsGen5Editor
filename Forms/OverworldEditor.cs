@@ -84,6 +84,134 @@ namespace NewEditor.Forms
             AttachMapView();
             AttachSpritePreview();
             SetupProxyEditor();
+            SetupRailButtons();
+        }
+
+        NumericUpDown railHeightBox;
+        Button railAddButton;
+        Button railRemoveButton;
+        Label railStatusLabel;
+
+        NumericUpDown railFromBox;
+
+        void SetupRailButtons()
+        {
+            var parent = mapIDNumberBox.Parent;
+            if (parent == null) return;
+            railAddButton = new Button { Text = "Add layer", Location = new Point(8, parent.Height - 50), Size = new Size(70, 24) };
+            railRemoveButton = new Button { Text = "Remove", Location = new Point(84, parent.Height - 50), Size = new Size(60, 24) };
+            var fromLabel = new Label { Text = "From", Location = new Point(150, parent.Height - 46), AutoSize = true };
+            var fromBox = new NumericUpDown { Location = new Point(182, parent.Height - 48), Size = new Size(50, 22), Minimum = -20, Maximum = 40, Value = 10, DecimalPlaces = 1, Increment = 0.5M };
+            railFromBox = fromBox;
+            var hl = new Label { Text = "To", Location = new Point(238, parent.Height - 46), AutoSize = true };
+            railHeightBox = new NumericUpDown { Location = new Point(258, parent.Height - 48), Size = new Size(50, 22), Minimum = -20, Maximum = 40, Value = 4, DecimalPlaces = 1, Increment = 0.5M };
+            var applyBtn = new Button { Text = "Apply", Location = new Point(302, parent.Height - 50), Size = new Size(50, 24) };
+            railStatusLabel = new Label { Text = "Rail: idle", Location = new Point(8, parent.Height - 24), AutoSize = true, ForeColor = System.Drawing.Color.DarkRed };
+            railAddButton.Click += RailAddClicked;
+            railRemoveButton.Click += RailRemoveClicked;
+            applyBtn.Click += RailApplyHeight;
+            parent.Controls.Add(railAddButton);
+            parent.Controls.Add(railRemoveButton);
+            parent.Controls.Add(fromBox);
+            parent.Controls.Add(fromLabel);
+            parent.Controls.Add(railHeightBox);
+            parent.Controls.Add(hl);
+            parent.Controls.Add(applyBtn);
+            parent.Controls.Add(railStatusLabel);
+        }
+
+        public int CurrentRailIndex()
+        {
+            if (CurrentZone == null || MainEditor.railNarc == null) return -1;
+            int zone = CurrentZone.index;
+            var arm9 = MainEditor.fileSystem.arm9;
+            var header = MainEditor.fileSystem.romHeader;
+            if (arm9 == null || header == null || header.Count < 0x2C) return -1;
+            int loadAddr = header[0x28] | (header[0x29] << 8) | (header[0x2A] << 16) | (header[0x2B] << 24);
+            int fileOff = 0x2018A72 - loadAddr;
+            if (fileOff < 0 || fileOff + 16 >= arm9.Count)
+            {
+                railStatusLabel.Text = "ARM9 off " + fileOff.ToString("X") + " load " + loadAddr.ToString("X");
+                return -1;
+            }
+            int count = arm9[fileOff];
+            int ptrOff = fileOff + 10;
+            if (ptrOff + 3 >= arm9.Count) { railStatusLabel.Text = "Ptr off range"; return -1; }
+            int ptr = arm9[ptrOff] | (arm9[ptrOff + 1] << 8) | (arm9[ptrOff + 2] << 16) | (arm9[ptrOff + 3] << 24);
+            int table = ptr - loadAddr;
+            if (table < 0 || table + count * 2 >= arm9.Count)
+            {
+                railStatusLabel.Text = "Table ptr " + ptr.ToString("X") + " -> " + table.ToString("X");
+                return -1;
+            }
+            int railIdx = -1;
+            for (int i = 0; i < count; i++)
+            {
+                int value = arm9[table] | (arm9[table + 1] << 8);
+                if ((value & 0x7FF) == zone) { railIdx = value >> 11; break; }
+                table += 2;
+            }
+            if (railIdx < 0)
+            {
+                railStatusLabel.Text = "Zone " + zone + " not in table (count " + count + " at " + fileOff.ToString("X") + ")";
+                return -1;
+            }
+            if (MainEditor.zoneNoGridNarcID < 0) return -1;
+            var hdr = MainEditor.fileSystem.narcs[MainEditor.zoneNoGridNarcID];
+            if (hdr == null) return -1;
+            var bytes = hdr.GetFileEntry(railIdx);
+            if (bytes == null || bytes.Count < 2) return -1;
+            return bytes[0] | (bytes[1] << 8);
+        }
+
+        void RailAddClicked(object sender, EventArgs e)
+        {
+            if (MainEditor.railNarc == null) { railStatusLabel.Text = "Rail NARC not loaded"; return; }
+            if (CurrentZone == null) { railStatusLabel.Text = "No zone"; return; }
+            int idx = CurrentRailIndex();
+            if (idx < 0) { railStatusLabel.Text = "No rail for zone " + CurrentZone.index; return; }
+            var rail = MainEditor.railNarc.GetRail(idx);
+            if (rail == null) { railStatusLabel.Text = "No rail data at " + idx; return; }
+            int fx = (int)(railHeightBox.Value * 0x10000);
+            int ground = rail.groundLineCount > 0 ? rail.groundLineCount : rail.lines.Count;
+            rail.AddLayer(fx);
+            var tm = MainEditor.railNarc.GetTilemap(idx);
+            if (tm != null) tm.AddLayerBlocks(ground);
+            MainEditor.railNarc.WriteData();
+            railStatusLabel.Text = "Layer added at " + railHeightBox.Value + ", lines " + rail.lines.Count;
+            if (mapView != null) mapView.InvalidateMap();
+        }
+
+        void RailRemoveClicked(object sender, EventArgs e)
+        {
+            if (MainEditor.railNarc == null || CurrentZone == null) return;
+            int idx = CurrentRailIndex();
+            if (idx < 0) return;
+            var rail = MainEditor.railNarc.GetRail(idx);
+            if (rail == null) return;
+            if (railFromBox.Value == 0) { railStatusLabel.Text = "Refusing to remove ground"; return; }
+            int n = rail.RemoveLayer(railFromBox.Value);
+            MainEditor.railNarc.WriteData();
+            railStatusLabel.Text = "Removed " + n + " lines at " + railFromBox.Value;
+            if (mapView != null) mapView.InvalidateMap();
+        }
+
+        void RailApplyHeight(object sender, EventArgs e)
+        {
+            if (MainEditor.railNarc == null || CurrentZone == null) return;
+            int idx = CurrentRailIndex();
+            if (idx < 0) return;
+            var rail = MainEditor.railNarc.GetRail(idx);
+            if (rail == null) return;
+            // Shift from the map's current filter height to the box value
+            decimal from = railFromBox.Value;
+            decimal to = railHeightBox.Value;
+            if (from == 0) { railStatusLabel.Text = "Refusing to move ground (0)"; return; }
+            if (to == 0) { railStatusLabel.Text = "Refusing to move to ground (0)"; return; }
+            int n = rail.SetLayerHeight(from, to);
+            MainEditor.railNarc.WriteData();
+            railStatusLabel.Text = "Moved " + n + " points " + from + " -> " + to;
+            if (mapView != null) mapView.InvalidateMap();
         }
 
         void SetupProxyEditor()
@@ -305,6 +433,7 @@ namespace NewEditor.Forms
         }
 
         NumericUpDown npcSidePosBox;
+        CheckBox npcRailBox;
         bool railSideEnabled;
 
         void AttachSidePosBox()
@@ -328,22 +457,58 @@ namespace NewEditor.Forms
             npcSidePosBox.ValueChanged += SidePosChanged;
             parent.Controls.Add(label);
             parent.Controls.Add(npcSidePosBox);
+
+            npcRailBox = new CheckBox
+            {
+                Text = "Rail position",
+                AutoSize = true,
+                Location = new Point(npcXPositionNumberBox.Left, npcSidePosBox.Bottom + 6)
+            };
+            npcRailBox.CheckedChanged += NpcRailToggled;
+            parent.Controls.Add(npcRailBox);
+
             mapTypeNumberBox.ValueChanged += (s, e) => RefreshSidePosEnabled();
             RefreshSidePosEnabled();
+        }
+
+        void NpcRailToggled(object sender, EventArgs e)
+        {
+            if (syncingNpc) return;
+            var objs = CurrentObjects;
+            if (objs == null || objs.NPCs == null) return;
+            int i = (int)npcIDNumberBox.Value;
+            if (i < 0 || i >= objs.NPCs.Count) return;
+            objs.NPCs[i].rail = npcRailBox.Checked;
+            UpdateNpcRailLabels();
+            if (mapView != null) mapView.InvalidateMap();
+        }
+
+        void UpdateNpcRailLabels()
+        {
+            bool rail = npcRailBox != null && npcRailBox.Checked;
+            if (label20 != null) label20.Text = rail ? "Line:" : "X:";
+            if (label18 != null) label18.Text = rail ? "Front:" : "Y:";
+            if (label16 != null) label16.Text = rail ? "Pad:" : "Z:";
+            if (npcSidePosBox != null) npcSidePosBox.Enabled = rail || railSideEnabled;
+        }
+
+        public void RefreshNpcPanel()
+        {
+            if (npcIDNumberBox != null)
+                npcIDNumberBox_ValueChanged(this, EventArgs.Empty);
         }
 
         void RefreshSidePosEnabled()
         {
             int mapType = mapTypeNumberBox == null ? 0 : (int)mapTypeNumberBox.Value;
             railSideEnabled = mapType != 0 && mapType != 16;
-            if (npcSidePosBox == null) return;
-            npcSidePosBox.Enabled = railSideEnabled;
-            npcSidePosBox.ReadOnly = !railSideEnabled;
+            UpdateNpcRailLabels();
         }
 
         void SidePosChanged(object sender, EventArgs e)
         {
-            if (syncingNpc || !railSideEnabled) return;
+            if (syncingNpc) return;
+            if (!railSideEnabled && (npcRailBox == null || !npcRailBox.Checked)) return;
             var objs = CurrentObjects;
             if (objs == null || objs.NPCs == null) return;
             int i = (int)npcIDNumberBox.Value;
@@ -779,6 +944,7 @@ namespace NewEditor.Forms
                 npcYPositionNumberBox.Value = npc.yPosition;
                 npcZPositionNumberBox.Value = npc.zPosition;
                 npcDirectionNumberBox.Value = npc.defaultDirection;
+                if (npcRailBox != null) npcRailBox.Checked = npc.rail;
                 if (npcSidePosBox != null)
                 {
                     decimal side = npc.unknown5;
@@ -789,6 +955,7 @@ namespace NewEditor.Forms
                 RefreshSidePosEnabled();
             }
             finally { syncingNpc = false; }
+            UpdateNpcRailLabels();
             if (mapView != null) mapView.InvalidateMap();
         }
 

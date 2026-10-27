@@ -23,6 +23,8 @@ namespace NewEditor.Forms
         Label infoLabel;
         CheckBox showWarpsBox;
         CheckBox showTriggersBox;
+        CheckBox showRailsBox;
+        ComboBox railLayerBox;
         CheckBox showProxiesBox;
         CheckBox fitZoneBox;
         CheckBox showTerrainBox;
@@ -31,9 +33,14 @@ namespace NewEditor.Forms
         CheckBox showSightBox;
         CheckBox editPermsBox;
         NumericUpDown floorBox;
+        NumericUpDown railLineBox;
+        NumericUpDown railHeightBox;
+        Label railHeightLabel;
         ToolTip hoverTip;
 
         int tilePx = 12;
+        float railScale, railOx, railOy;
+        int railIdx = -1;
         int mapW = 32;
         int mapH = 32;
         int originX; // global tile origin of the drawn crop
@@ -80,6 +87,10 @@ namespace NewEditor.Forms
             zoomBar.ValueChanged += ZoomBarChanged;
 
             showTriggersBox = MakeToggle("Triggers", true);
+            showRailsBox = MakeToggle("Rails", false);
+            railLayerBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 80 };
+            railLayerBox.Items.AddRange(new object[] { "Ground", "Sky", "Both" });
+            railLayerBox.SelectedIndex = 2;
             showWarpsBox = MakeToggle("Warps", true);
             showProxiesBox = MakeToggle("Proxies", true);
             fitZoneBox = MakeToggle("Fit zone", true);
@@ -105,7 +116,13 @@ namespace NewEditor.Forms
                 Padding = new Padding(8, 12, 2, 0)
             };
             floorBox.ValueChanged += (s, e) => Rebuild();
+            railLineBox = new NumericUpDown { Minimum = -1, Maximum = 63, Value = -1, Width = 42, Dock = DockStyle.Right };
+            var lineLabel = new Label { Text = "Line", ForeColor = Color.Gainsboro, AutoSize = true, Dock = DockStyle.Right, Padding = new Padding(8, 12, 2, 0) };
+            railHeightLabel = new Label { Text = "", ForeColor = Color.Gainsboro, AutoSize = true, Dock = DockStyle.Right, Padding = new Padding(8, 12, 2, 0) };
+            railLineBox.ValueChanged += (s, e) => { UpdateHeightLabel(); InvalidateMap(); };
             showTriggersBox.CheckedChanged += (s, e) => InvalidateMap();
+            showRailsBox.CheckedChanged += (s, e) => InvalidateMap();
+            railLayerBox.SelectedIndexChanged += (s, e) => InvalidateMap();
             showWarpsBox.CheckedChanged += (s, e) => InvalidateMap();
             showProxiesBox.CheckedChanged += (s, e) => InvalidateMap();
             showTerrainBox.CheckedChanged += (s, e) => InvalidateMap();
@@ -124,7 +141,12 @@ namespace NewEditor.Forms
             top.Controls.Add(editPermsBox);
             top.Controls.Add(floorBox);
             top.Controls.Add(floorLabel);
+            top.Controls.Add(railLineBox);
+            top.Controls.Add(lineLabel);
+            top.Controls.Add(railHeightLabel);
             top.Controls.Add(showTriggersBox);
+            top.Controls.Add(showRailsBox);
+            top.Controls.Add(railLayerBox);
             top.Controls.Add(showWarpsBox);
             top.Controls.Add(showProxiesBox);
             top.Controls.Add(showSightBox);
@@ -429,6 +451,7 @@ namespace NewEditor.Forms
             int i = host.SelectedNpcIndex;
             if (i < 0 || i >= host.CurrentObjects.NPCs.Count) return;
             var n = host.CurrentObjects.NPCs[i];
+            if (n.rail) return;
             int sx = (n.xPosition - originX) * tilePx;
             int sy = (n.yPosition - originY) * tilePx;
             ((MapScrollPanel)canvasHost).SetScroll(
@@ -459,6 +482,7 @@ namespace NewEditor.Forms
             for (int i = 0; i < objs.NPCs.Count; i++)
             {
                 var n = objs.NPCs[i];
+                if (n.rail) continue;
                 int dx = n.xPosition - tile.X;
                 int dy = n.yPosition - tile.Y;
                 int d = dx * dx + dy * dy;
@@ -495,8 +519,99 @@ namespace NewEditor.Forms
             return found;
         }
 
+        bool railMouseDown;
+        bool railDragging;
+        Point railDragAnchor;
+
+        void RailDrag(Point mouse)
+        {
+            if (host == null || MainEditor.railNarc == null || railIdx < 0) return;
+            var rail = MainEditor.railNarc.GetRail(railIdx);
+            if (rail == null) return;
+            var objs = host.CurrentObjects;
+            if (objs == null || objs.NPCs == null) return;
+            if (!railDragging)
+            {
+                for (int i = 0; i < objs.NPCs.Count; i++)
+                {
+                    var npc = objs.NPCs[i];
+                    if (!npc.rail) continue;
+                    int line = npc.xPosition;
+                    if (line < 0 || line >= rail.lines.Count) continue;
+                    var ln = rail.lines[line];
+                    if (ln.point1 < 0 || ln.point1 >= rail.points.Count || ln.point2 < 0 || ln.point2 >= rail.points.Count) continue;
+                    var p1 = rail.points[ln.point1];
+                    var p2 = rail.points[ln.point2];
+                    float t = ln.tileLength > 0 ? (float)npc.yPosition / ln.tileLength : 0;
+                    float cx = (p1.x + (p2.x - p1.x) * t) / 65536f * railScale + railOx;
+                    float cy = (p1.z + (p2.z - p1.z) * t) / 65536f * railScale + railOy;
+                    float dx = (p2.x - p1.x) / 65536f, dz = (p2.z - p1.z) / 65536f;
+                    float len = (float)Math.Sqrt(dx * dx + dz * dz);
+                    if (len > 0.01f)
+                    {
+                        cx += -dz / len * npc.unknown5 * railScale / 2f;
+                        cy += dx / len * npc.unknown5 * railScale / 2f;
+                    }
+                    if (Math.Abs(mouse.X - cx) < 12 && Math.Abs(mouse.Y - cy) < 12)
+                    {
+                        host.SelectNpc(i);
+                        railDragAnchor = mouse;
+                        railMouseDown = true;
+                        railDragging = false;
+                        return;
+                    }
+                }
+            }
+            int sel = host.SelectedNpcIndex;
+            if (sel < 0 || sel >= objs.NPCs.Count || !objs.NPCs[sel].rail) return;
+            int onlyLine = railLineBox == null ? -1 : (int)railLineBox.Value;
+            int bestLine = onlyLine >= 0 ? onlyLine : -1;
+            float bestDist = float.MaxValue;
+            int bestFront = 0, bestSide = 0;
+            for (int i = 0; i < rail.lines.Count; i++)
+            {
+                if (onlyLine >= 0 && i != onlyLine) continue;
+                var ln = rail.lines[i];
+                if (ln.point1 < 0 || ln.point1 >= rail.points.Count || ln.point2 < 0 || ln.point2 >= rail.points.Count) continue;
+                var p1 = rail.points[ln.point1];
+                var p2 = rail.points[ln.point2];
+                float x1 = p1.x / 65536f * railScale + railOx;
+                float y1 = p1.z / 65536f * railScale + railOy;
+                float x2 = p2.x / 65536f * railScale + railOx;
+                float y2 = p2.z / 65536f * railScale + railOy;
+                float dx = x2 - x1, dy = y2 - y1;
+                float len2 = dx * dx + dy * dy;
+                if (len2 < 1) continue;
+                float t = ((mouse.X - x1) * dx + (mouse.Y - y1) * dy) / len2;
+                t = Math.Max(0, Math.Min(1, t));
+                float cx = x1 + dx * t, cy = y1 + dy * t;
+                float dist = (float)Math.Sqrt((mouse.X - cx) * (mouse.X - cx) + (mouse.Y - cy) * (mouse.Y - cy));
+                if (dist < bestDist)
+                {
+                    bestDist = dist;
+                    bestLine = i;
+                    bestFront = (int)(t * ln.tileLength);
+                    float nx = -dy, ny = dx;
+                    float nlen = (float)Math.Sqrt(nx * nx + ny * ny);
+                    if (nlen > 0) bestSide = (int)(((mouse.X - cx) * nx + (mouse.Y - cy) * ny) / nlen / (railScale / 2f));
+                }
+            }
+            if (bestLine < 0) return;
+            var n = objs.NPCs[sel];
+            n.xPosition = (short)bestLine;
+            n.yPosition = (short)bestFront;
+            n.unknown5 = (short)bestSide;
+            host.RefreshNpcPanel();
+            InvalidateMap();
+        }
+
         void Canvas_MouseDown(object sender, MouseEventArgs e)
         {
+            if (showRailsBox != null && showRailsBox.Checked && e.Button == MouseButtons.Left)
+            {
+                RailDrag(e.Location);
+                return;
+            }
             if (e.Button == MouseButtons.Middle)
             {
                 panning = true;
@@ -583,6 +698,16 @@ namespace NewEditor.Forms
 
         void Canvas_MouseMove(object sender, MouseEventArgs e)
         {
+            if (showRailsBox != null && showRailsBox.Checked && (railMouseDown || railDragging))
+            {
+                if (railMouseDown && Math.Abs(e.X - railDragAnchor.X) + Math.Abs(e.Y - railDragAnchor.Y) > 4)
+                {
+                    railMouseDown = false;
+                    railDragging = true;
+                }
+                if (railDragging) RailDrag(e.Location);
+                return;
+            }
             if (panning)
             {
                 int dx = e.X - panLast.X;
@@ -625,6 +750,7 @@ namespace NewEditor.Forms
 
         void Canvas_MouseUp(object sender, MouseEventArgs e)
         {
+            if (railDragging || railMouseDown) { railDragging = false; railMouseDown = false; return; }
             if (panning)
             {
                 panning = false;
@@ -737,6 +863,7 @@ namespace NewEditor.Forms
                 for (int i = 0; i < objs.NPCs.Count; i++)
                 {
                     var n = objs.NPCs[i];
+                    if (n.rail) continue;
                     if (n.xPosition != t.X || n.yPosition != t.Y) continue;
                     tip += string.Format("\nNPC #{0}  sprite {1}  script {2}  flag {3}  dir {4}",
                         i, n.sprite, n.scriptUsed, n.flag, n.defaultDirection);
@@ -761,6 +888,11 @@ namespace NewEditor.Forms
         {
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.None;
+            if (showRailsBox != null && showRailsBox.Checked)
+            {
+                DrawRailMap(g, e.ClipRectangle);
+                return;
+            }
             g.Clear(Color.FromArgb(18, 20, 24));
 
             int cellsX = occupancy != null ? occupancy.GetLength(0) : 1;
@@ -895,6 +1027,9 @@ namespace NewEditor.Forms
             if (showProxiesBox != null && showProxiesBox.Checked && objs.furniture != null)
                 DrawProxies(g, objs.furniture);
 
+            if (showRailsBox != null && showRailsBox.Checked)
+                DrawRails(g);
+
             if (objs.NPCs == null) return;
             int selected = host.SelectedNpcIndex;
 
@@ -918,10 +1053,238 @@ namespace NewEditor.Forms
                 for (int i = 0; i < objs.NPCs.Count; i++)
                 {
                     var n = objs.NPCs[i];
+                    if (n.rail) continue;
                     int px = (n.xPosition - originX) * tilePx + stack[i] * Math.Max(3, tilePx / 4);
                     int py = (n.yPosition - originY) * tilePx - stack[i] * Math.Max(3, tilePx / 4);
                     bool sel = i == selected;
                     DrawNpcMarker(g, px, py, tilePx, i, n, sel, font, sf);
+                }
+            }
+        }
+
+        void UpdateHeightLabel()
+        {
+            if (railHeightLabel == null || host == null || MainEditor.railNarc == null) return;
+            int onlyLine = railLineBox == null ? -1 : (int)railLineBox.Value;
+            if (onlyLine < 0) { railHeightLabel.Text = ""; return; }
+            var rail = MainEditor.railNarc.GetRail(host.CurrentRailIndex());
+            if (rail == null || onlyLine >= rail.lines.Count) { railHeightLabel.Text = ""; return; }
+            var ln = rail.lines[onlyLine];
+            if (ln.point1 < 0 || ln.point1 >= rail.points.Count || ln.point2 < 0 || ln.point2 >= rail.points.Count) return;
+            int y = (rail.points[ln.point1].y + rail.points[ln.point2].y) / 2;
+            railHeightLabel.Text = "H " + (y / 65536.0).ToString("0.0");
+        }
+
+        public int CurrentLayerHeight { get { return 0; } }
+
+        void UpdateHeightBox()
+        {
+            if (railHeightBox == null || host == null || MainEditor.railNarc == null) return;
+            int onlyLine = (int)railLineBox.Value;
+            if (onlyLine < 0) { railHeightLabel.Text = ""; return; }
+            var rail = MainEditor.railNarc.GetRail(host.CurrentRailIndex());
+            if (rail == null || onlyLine >= rail.lines.Count) return;
+            var ln = rail.lines[onlyLine];
+            if (ln.point1 < 0 || ln.point1 >= rail.points.Count || ln.point2 < 0 || ln.point2 >= rail.points.Count) return;
+            int y = (rail.points[ln.point1].y + rail.points[ln.point2].y) / 2;
+            int tiles = y / 0x10000;
+            if (tiles >= (int)railHeightBox.Minimum && tiles <= (int)railHeightBox.Maximum)
+                railHeightBox.Value = tiles;
+            railHeightLabel.Text = "H " + tiles;
+        }
+
+        void RailHeightAdjusted(object sender, EventArgs e)
+        {
+            if (host == null || MainEditor.railNarc == null) return;
+            int onlyLine = railLineBox == null ? -1 : (int)railLineBox.Value;
+            if (onlyLine < 0) return;
+            var rail = MainEditor.railNarc.GetRail(host.CurrentRailIndex());
+            if (rail == null || onlyLine >= rail.lines.Count) return;
+            int half = rail.hasSky ? rail.lines.Count / 2 : rail.lines.Count;
+            if (onlyLine < half) { railHeightLabel.Text = "Ground (locked)"; return; }
+            var ln = rail.lines[onlyLine];
+            if (ln.point1 < 0 || ln.point1 >= rail.points.Count || ln.point2 < 0 || ln.point2 >= rail.points.Count) return;
+            int target = (int)railHeightBox.Value * 0x10000;
+            int cur = (rail.points[ln.point1].y + rail.points[ln.point2].y) / 2;
+            int delta = target - cur;
+            rail.points[ln.point1].y += delta;
+            rail.points[ln.point2].y += delta;
+            BitConverter.GetBytes(rail.points[ln.point1].y).CopyTo(rail.points[ln.point1].raw, 52);
+            BitConverter.GetBytes(rail.points[ln.point2].y).CopyTo(rail.points[ln.point2].raw, 52);
+            MainEditor.railNarc.WriteData();
+            InvalidateMap();
+        }
+
+        void DrawRailMap(Graphics g, Rectangle clip)
+        {
+            g.Clear(Color.FromArgb(28, 30, 36));
+            if (MainEditor.railNarc == null || host == null || host.CurrentZone == null) return;
+            int idx = host.CurrentRailIndex();
+            var rail = MainEditor.railNarc.GetRail(idx);
+            if (rail == null || rail.lines.Count == 0) return;
+
+            var layers = RailLayers(rail);
+            RefreshLayerBox(layers);
+
+            float minX = float.MaxValue, minZ = float.MaxValue, maxX = float.MinValue, maxZ = float.MinValue;
+            int onlyLine = railLineBox == null ? -1 : (int)railLineBox.Value;
+            var visible = new System.Collections.Generic.List<int>();
+            for (int i = 0; i < rail.lines.Count; i++)
+            {
+                var ln = rail.lines[i];
+                if (ln.point1 < 0 || ln.point1 >= rail.points.Count || ln.point2 < 0 || ln.point2 >= rail.points.Count) continue;
+                if (onlyLine >= 0 && i != onlyLine) continue;
+                visible.Add(i);
+                var p1 = rail.points[ln.point1];
+                var p2 = rail.points[ln.point2];
+                minX = Math.Min(minX, Math.Min(p1.x, p2.x));
+                maxX = Math.Max(maxX, Math.Max(p1.x, p2.x));
+                minZ = Math.Min(minZ, Math.Min(p1.z, p2.z));
+                maxZ = Math.Max(maxZ, Math.Max(p1.z, p2.z));
+            }
+            // Expand bounds by 8 side units so the outer lines aren't clipped
+            float pad = 8f * 65536f / 2f;
+            minX -= pad; maxX += pad; minZ -= pad; maxZ += pad;
+            if (visible.Count == 0) return;
+
+            float spanX = Math.Max(1, (maxX - minX) / 65536f);
+            float spanZ = Math.Max(1, (maxZ - minZ) / 65536f);
+            int vw = Math.Max(1, canvas.Width - 20);
+            int vh = Math.Max(1, canvas.Height - 20);
+            float scale = Math.Min(vw / spanX, vh / spanZ);
+            float ox = 10 - minX / 65536f * scale;
+            float oy = 10 - minZ / 65536f * scale;
+            railScale = scale;
+            railOx = ox;
+            railOy = oy;
+            railIdx = idx;
+
+            using (var pen = new Pen(Color.FromArgb(200, 90, 170, 230), 3))
+            using (var edge = new Pen(Color.FromArgb(100, 90, 170, 230), 1))
+            using (var tick = new Pen(Color.FromArgb(60, 90, 170, 230), 1))
+            using (var font = new Font("Segoe UI", 9f, FontStyle.Bold, GraphicsUnit.Pixel))
+            {
+                foreach (int i in visible)
+                {
+                    var ln = rail.lines[i];
+                    var p1 = rail.points[ln.point1];
+                    var p2 = rail.points[ln.point2];
+                    float x1 = p1.x / 65536f * scale + ox;
+                    float y1 = p1.z / 65536f * scale + oy;
+                    float x2 = p2.x / 65536f * scale + ox;
+                    float y2 = p2.z / 65536f * scale + oy;
+                    g.DrawLine(pen, x1, y1, x2, y2);
+                    float dx = x2 - x1, dy = y2 - y1;
+                    float len = (float)Math.Sqrt(dx * dx + dy * dy);
+                    if (len < 1) continue;
+                    float nx = -dy / len, ny = dx / len;
+                    float sideUnit = scale / 2f;
+                    for (int s = 1; s <= 8; s++)
+                    {
+                        g.DrawLine(edge, x1 + nx * sideUnit * s, y1 + ny * sideUnit * s, x2 + nx * sideUnit * s, y2 + ny * sideUnit * s);
+                        g.DrawLine(edge, x1 - nx * sideUnit * s, y1 - ny * sideUnit * s, x2 - nx * sideUnit * s, y2 - ny * sideUnit * s);
+                    }
+                    int steps = Math.Max(1, ln.tileLength);
+                    for (int s = 0; s <= steps; s += Math.Max(1, steps / 16))
+                    {
+                        float t = (float)s / steps;
+                        float tx = x1 + dx * t, ty = y1 + dy * t;
+                        g.DrawLine(tick, tx - nx * sideUnit * 8, ty - ny * sideUnit * 8, tx + nx * sideUnit * 8, ty + ny * sideUnit * 8);
+                    }
+                    g.DrawString(i.ToString(), font, Brushes.White, x1 + 4, y1 - 12);
+                }
+            }
+
+            var objs = host.CurrentObjects;
+            if (objs == null || objs.NPCs == null) return;
+            using (var font = new Font("Segoe UI", 8f, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+            {
+                for (int i = 0; i < objs.NPCs.Count; i++)
+                {
+                    var n = objs.NPCs[i];
+                    if (!n.rail) continue;
+                    if (onlyLine >= 0 && n.xPosition != onlyLine) continue;
+                    int line = n.xPosition;
+                    int front = n.yPosition;
+                    int side = n.unknown5;
+                    if (line < 0 || line >= rail.lines.Count) continue;
+                    var ln = rail.lines[line];
+                    if (ln.point1 < 0 || ln.point1 >= rail.points.Count || ln.point2 < 0 || ln.point2 >= rail.points.Count) continue;
+                    var p1 = rail.points[ln.point1];
+                    var p2 = rail.points[ln.point2];
+                    float t = ln.tileLength > 0 ? (float)front / ln.tileLength : 0;
+                    float cx = (p1.x + (p2.x - p1.x) * t) / 65536f * scale + ox;
+                    float cy = (p1.z + (p2.z - p1.z) * t) / 65536f * scale + oy;
+                    float dx = (p2.x - p1.x) / 65536f, dz = (p2.z - p1.z) / 65536f;
+                    float len = (float)Math.Sqrt(dx * dx + dz * dz);
+                    if (len > 0.01f)
+                    {
+                        float sx = -dz / len * side * scale / 2f;
+                        float sy = dx / len * side * scale / 2f;
+                        cx += sx;
+                        cy += sy;
+                    }
+                    bool sel = i == (host == null ? -1 : host.SelectedNpcIndex);
+                    DrawNpcMarker(g, (int)cx, (int)cy, 12, i, n, sel, font, sf);
+                }
+            }
+        }
+
+        System.Collections.Generic.List<int> RailLayers(RailFile rail)
+        {
+            var ys = new System.Collections.Generic.List<int>();
+            foreach (var ln in rail.lines)
+            {
+                if (ln.point1 < 0 || ln.point1 >= rail.points.Count || ln.point2 < 0 || ln.point2 >= rail.points.Count) continue;
+                int y = (rail.points[ln.point1].y + rail.points[ln.point2].y) / 2;
+                bool found = false;
+                foreach (var e in ys) if (Math.Abs(e - y) < 0x1000) { found = true; break; }
+                if (!found) ys.Add(y);
+            }
+            ys.Sort();
+            return ys;
+        }
+
+        void RefreshLayerBox(System.Collections.Generic.List<int> layers)
+        {
+            if (railLayerBox == null) return;
+            if (railLayerBox.Items.Count == layers.Count + 1) return;
+            int sel = railLayerBox.SelectedIndex;
+            railLayerBox.Items.Clear();
+            railLayerBox.Items.Add("All");
+            for (int i = 0; i < layers.Count; i++)
+                railLayerBox.Items.Add(i == 0 ? "Ground" : "Layer " + i + " (+" + (layers[i] / 0x10000) + ")");
+            railLayerBox.SelectedIndex = sel >= 0 && sel < railLayerBox.Items.Count ? sel : 0;
+        }
+
+        void DrawRails(Graphics g)
+        {
+            if (MainEditor.railNarc == null || host == null || host.CurrentZone == null) return;
+            int idx = host.CurrentRailIndex();
+            var rail = MainEditor.railNarc.GetRail(idx);
+            if (rail == null || rail.lines.Count == 0) return;
+            int layer = railLayerBox == null ? 2 : railLayerBox.SelectedIndex;
+            int half = rail.hasSky ? rail.lines.Count / 2 : rail.lines.Count;
+            using (var penG = new Pen(Color.FromArgb(180, 80, 80, 80), 2))
+            using (var penS = new Pen(Color.FromArgb(180, 80, 160, 220), 2))
+            {
+                for (int i = 0; i < rail.lines.Count; i++)
+                {
+                    bool sky = rail.hasSky && i >= half;
+                    if (layer == 0 && sky) continue;
+                    if (layer == 1 && !sky) continue;
+                    var ln = rail.lines[i];
+                    if (ln.point1 < 0 || ln.point1 >= rail.points.Count) continue;
+                    if (ln.point2 < 0 || ln.point2 >= rail.points.Count) continue;
+                    var p1 = rail.points[ln.point1];
+                    var p2 = rail.points[ln.point2];
+                    // Project FX32 XZ to tile space (16 units/tile, 0x1000 per unit)
+                    float x1 = (p1.x / 65536f - originX) * tilePx;
+                    float y1 = (p1.z / 65536f - originY) * tilePx;
+                    float x2 = (p2.x / 65536f - originX) * tilePx;
+                    float y2 = (p2.z / 65536f - originY) * tilePx;
+                    g.DrawLine(sky ? penS : penG, x1, y1, x2, y2);
                 }
             }
         }
@@ -998,6 +1361,7 @@ namespace NewEditor.Forms
             {
                 foreach (var n in npcs)
                 {
+                    if (n.rail) continue;
                     if (showLeashBox.Checked)
                     {
                         int hx = Math.Max(0, (int)n.horizontalLeash);

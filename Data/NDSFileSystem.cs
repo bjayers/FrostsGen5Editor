@@ -59,6 +59,8 @@ namespace NewEditor.Data
         public Y9Table y9;
         public List<byte> banner;
         public List<byte> romEnder;
+        public string SourceRomPath;
+        DsiDigestSource dsiSource;
 
         public List<List<byte>> overlays;
         public List<object> files;
@@ -151,6 +153,7 @@ namespace NewEditor.Data
                 { MainEditor.trainerPokeNarcID, typeof(TrainerPokeNARC) },
                 { MainEditor.xpCurveNarcID, typeof(XPCurveNARC) },
                 { MainEditor.zoneDataNarcID, typeof(ZoneDataNARC) },
+                { MainEditor.railNarcID, typeof(RailNARC) },
             };
             result.overlays = new List<List<byte>>();
             result.files = new List<object>();
@@ -294,7 +297,7 @@ namespace NewEditor.Data
 
             //Get Rom Ender
             int ptr = HelperFunctions.ReadInt(result.romHeader, End_PointerLocation);
-            b = new byte[(ptr == 0 || ptr > fs.Length) ? 0 : Math.Min(fs.Length, 0x12000000) - ptr];
+            b = new byte[(ptr == 0 || ptr > fs.Length) ? 0 : fs.Length - ptr];
             fs.Position = HelperFunctions.ReadInt(result.romHeader, End_PointerLocation);
             fs.Read(b, 0, b.Length);
             result.romEnder = new List<byte>(b);
@@ -363,6 +366,7 @@ namespace NewEditor.Data
                 { MainEditor.trainerDataNarcID, typeof(TrainerDataNARC) },
                 { MainEditor.trainerPokeNarcID, typeof(TrainerPokeNARC) },
                 { MainEditor.zoneDataNarcID, typeof(ZoneDataNARC) },
+                { MainEditor.railNarcID, typeof(RailNARC) },
                 { MainEditor.xpCurveNarcID, typeof(XPCurveNARC) },
             };
             result.overlays = new List<List<byte>>();
@@ -447,6 +451,27 @@ namespace NewEditor.Data
             return result;
         }
 
+
+        /// <summary>
+        /// Read and authenticate DSi digest metadata from SourceRomPath.
+        /// Call after load. Returns true if a rebuildable source was captured.
+        /// </summary>
+        public bool CaptureDsiSource()
+        {
+            dsiSource = null;
+            if (string.IsNullOrEmpty(SourceRomPath) || !File.Exists(SourceRomPath)) return false;
+            try
+            {
+                byte[] rom = File.ReadAllBytes(SourceRomPath);
+                dsiSource = DsiDigest.TryRead(rom);
+                return dsiSource != null;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public byte[] BuildRom()
         {
             List<byte> romBytes = new List<byte>();
@@ -498,8 +523,14 @@ namespace NewEditor.Data
                 file++;
             }
 
-            HelperFunctions.WriteInt(romHeader, End_PointerLocation, romEnder.Count == 0 ? 0 : romBytes.Count);
-            AddSection(romBytes, romEnder);
+            // When we have a DSi source, RebuildDsi places the digests and the TWL
+            // region itself. The old romEnder already contains that TWL span, so
+            // appending it here would double-count it and grow the ROM by ~6–7 MB.
+            if (dsiSource == null)
+            {
+                HelperFunctions.WriteInt(romHeader, End_PointerLocation, romEnder.Count == 0 ? 0 : romBytes.Count);
+                AddSection(romBytes, romEnder);
+            }
 
             //Rewrite header and FAT after updating values
             romBytes.RemoveRange(0, romHeader.Count);
@@ -508,7 +539,98 @@ namespace NewEditor.Data
             romBytes.RemoveRange(HelperFunctions.ReadInt(romHeader, FAT_PointerLocation), fat.Count);
             romBytes.InsertRange(HelperFunctions.ReadInt(romHeader, FAT_PointerLocation), fat);
 
-            return romBytes.ToArray();
+            byte[] built = romBytes.ToArray();
+            if (dsiSource != null)
+            {
+                try { built = RebuildDsi(built); }
+                catch (Exception ex)
+                {
+                    System.Windows.Forms.MessageBox.Show("DSi digest rebuild failed; saving without DSi integrity.\n" + ex.Message);
+                }
+            }
+            return built;
+        }
+
+        byte[] RebuildDsi(byte[] native)
+        {
+            // Native content is already written. Plan digests after it, then append the preserved TWL region.
+            int fileEnd = native.Length;
+            // Trim trailing 0xFF padding so the digest starts at the real content end
+            while (fileEnd > 0 && native[fileEnd - 1] == 0xFF) fileEnd--;
+            fileEnd = (fileEnd + 3) & ~3;
+
+            var layout = DsiDigest.Plan(dsiSource, fileEnd);
+            if (layout == null) return native;
+
+            int twlStart = ((layout.End + 0x7FFFF) / 0x80000) * 0x80000;
+            int total = twlStart + dsiSource.RegionSize;
+            byte[] rom = new byte[total];
+            Array.Copy(native, 0, rom, 0, Math.Min(native.Length, fileEnd));
+            // Fill gap with 0xFF (NTR padding) then 0x00 for digest area is handled by Write
+            for (int i = fileEnd; i < layout.SectorOffset && i < rom.Length; i++) rom[i] = 0xFF;
+            Array.Copy(dsiSource.TwlRegion, 0, rom, twlStart, dsiSource.TwlRegion.Length);
+
+            DsiDigest.Write(rom, dsiSource, layout, twlStart);
+
+            // Relocate ARM9i / ARM7i
+            if (dsiSource.Arm9iOffsetInRegion >= 0)
+            {
+                WriteU32(rom, 0x1C0, (uint)(twlStart + dsiSource.Arm9iOffsetInRegion));
+                WriteU32(rom, 0x1CC, (uint)dsiSource.Arm9iSize);
+            }
+            if (dsiSource.Arm7iOffsetInRegion >= 0)
+            {
+                WriteU32(rom, 0x1D0, (uint)(twlStart + dsiSource.Arm7iOffsetInRegion));
+                WriteU32(rom, 0x1DC, (uint)dsiSource.Arm7iSize);
+            }
+
+            // NTR used size, total size, boundary
+            WriteU32(rom, 0x80, (uint)layout.End);
+            WriteU32(rom, 0x210, (uint)total);
+            int boundary = (layout.End + 0x7FFFF) / 0x80000;
+            WriteU16(rom, 0x90, (ushort)boundary);
+            WriteU16(rom, 0x92, (ushort)boundary);
+
+            // Banner size
+            if (banner != null && banner.Count > 0)
+                WriteU32(rom, 0x208, (uint)banner.Count);
+
+            // Relocate modcrypt ranges that lived inside the preserved TWL region
+            if (dsiSource.Modcrypt1OffsetInRegion >= 0)
+            {
+                WriteU32(rom, 0x220, (uint)(twlStart + dsiSource.Modcrypt1OffsetInRegion));
+                WriteU32(rom, 0x224, (uint)dsiSource.Modcrypt1Size);
+            }
+            if (dsiSource.Modcrypt2OffsetInRegion >= 0)
+            {
+                WriteU32(rom, 0x228, (uint)(twlStart + dsiSource.Modcrypt2OffsetInRegion));
+                WriteU32(rom, 0x22C, (uint)dsiSource.Modcrypt2Size);
+            }
+
+            // Header CRC
+            WriteU16(rom, 0x15C, Crc16(rom, 0xC0, 156));
+            WriteU16(rom, 0x15E, Crc16(rom, 0, 0x15E));
+            return rom;
+        }
+
+        static void WriteU32(byte[] b, int o, uint v)
+        {
+            b[o] = (byte)v; b[o + 1] = (byte)(v >> 8); b[o + 2] = (byte)(v >> 16); b[o + 3] = (byte)(v >> 24);
+        }
+        static void WriteU16(byte[] b, int o, ushort v)
+        {
+            b[o] = (byte)v; b[o + 1] = (byte)(v >> 8);
+        }
+        static ushort Crc16(byte[] data, int offset, int length, ushort initial = 0xFFFF)
+        {
+            ushort crc = initial;
+            for (int i = 0; i < length; i++)
+            {
+                crc ^= data[offset + i];
+                for (int bit = 0; bit < 8; bit++)
+                    crc = (ushort)(((crc & 1) != 0) ? (crc >> 1) ^ 0xA001 : crc >> 1);
+            }
+            return crc;
         }
 
         public void DumpFileSystem(string path)

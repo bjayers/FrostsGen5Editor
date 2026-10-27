@@ -178,8 +178,7 @@ namespace NewEditor.Data.NARCTypes
                     unknown2 = (short)HelperFunctions.ReadShort(bytes, readPos + 18),
                     horizontalLeash = (short)HelperFunctions.ReadShort(bytes, readPos + 20),
                     verticalLeash = (short)HelperFunctions.ReadShort(bytes, readPos + 22),
-                    unknown3 = (short)HelperFunctions.ReadShort(bytes, readPos + 24),
-                    unknown4 = (short)HelperFunctions.ReadShort(bytes, readPos + 26),
+                    rail = HelperFunctions.ReadInt(bytes, readPos + 24) != 0,
                     xPosition = (short)HelperFunctions.ReadShort(bytes, readPos + 28),
                     yPosition = (short)HelperFunctions.ReadShort(bytes, readPos + 30),
                     unknown5 = (short)HelperFunctions.ReadShort(bytes, readPos + 32),
@@ -295,8 +294,7 @@ namespace NewEditor.Data.NARCTypes
                 newBytes.AddRange(BitConverter.GetBytes(o.unknown2));
                 newBytes.AddRange(BitConverter.GetBytes(o.horizontalLeash));
                 newBytes.AddRange(BitConverter.GetBytes(o.verticalLeash));
-                newBytes.AddRange(BitConverter.GetBytes(o.unknown3));
-                newBytes.AddRange(BitConverter.GetBytes(o.unknown4));
+                newBytes.AddRange(BitConverter.GetBytes(o.rail ? 1 : 0));
                 newBytes.AddRange(BitConverter.GetBytes(o.xPosition));
                 newBytes.AddRange(BitConverter.GetBytes(o.yPosition));
                 newBytes.AddRange(BitConverter.GetBytes(o.unknown5));
@@ -462,8 +460,7 @@ namespace NewEditor.Data.NARCTypes
         public short unknown2;
         public short horizontalLeash;
         public short verticalLeash;
-        public short unknown3;
-        public short unknown4;
+        public bool rail;
         public short xPosition;
         public short yPosition;
         public short unknown5;
