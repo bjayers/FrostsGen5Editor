@@ -1,11 +1,9 @@
 using NewEditor.Data;
-using NewEditor.Data.NARCTypes;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
-using System.IO;
 using System.Linq;
 using System.Windows.Forms;
 
@@ -13,8 +11,9 @@ namespace NewEditor.Forms
 {
     /// <summary>
     /// Following Pokémon: the follower runtime's dialogue, gifts and appearances,
-    /// laid out after Pokeweb's Following Pokémon page. This build reads and
-    /// previews everything; editing and saving come next.
+    /// laid out after Pokeweb's Following Pokémon page. Dialogue and gifts are
+    /// edited as drafts and saved into the loaded ROM; appearances are read-only
+    /// for now.
     /// </summary>
     public class FollowingPokemonEditor : Form
     {
@@ -34,10 +33,12 @@ namespace NewEditor.Forms
         readonly FollowingData data;
         readonly List<string> speciesNames, itemNames, typeNames, zoneNames;
         readonly Dictionary<int, Bitmap> thumbnails = new Dictionary<int, Bitmap>();
+        readonly List<SearchComboBox.Option> speciesOptions = new List<SearchComboBox.Option>();
+        readonly List<SearchComboBox.Option> itemOptions = new List<SearchComboBox.Option>();
 
         TabControl tabs;
-        TabPage dialogueTab, giftTab, overviewTab, appearanceTab;
-        ComboBox overviewSpecies;
+        TabPage dialogueTab, giftTab, overviewTab, appearanceTab, creditsTab;
+        SearchComboBox overviewSpecies;
 
         public FollowingPokemonEditor(FollowingData data)
         {
@@ -46,9 +47,11 @@ namespace NewEditor.Forms
             itemNames = Texts(VersionConstants.ItemNameTextFileID);
             typeNames = Texts(VersionConstants.TypeNameTextFileID);
             zoneNames = Texts(VersionConstants.ZoneNameTextFileID);
+            for (int i = 1; i < Math.Min(speciesNames.Count, 1024); i++) speciesOptions.Add(new SearchComboBox.Option(i, SpeciesName(i) + " #" + i));
+            for (int i = 1; i < itemNames.Count; i++) itemOptions.Add(new SearchComboBox.Option(i, ItemName(i) + " #" + i));
 
             Text = "Following Pokémon";
-            Size = new Size(1100, 760);
+            Size = new Size(1100, 780);
             MinimumSize = new Size(900, 600);
             StartPosition = FormStartPosition.CenterScreen;
 
@@ -57,15 +60,33 @@ namespace NewEditor.Forms
             giftTab = new TabPage("Gifts");
             overviewTab = new TabPage("Pokémon overview");
             appearanceTab = new TabPage("Appearances");
-            tabs.TabPages.AddRange(new[] { dialogueTab, giftTab, overviewTab, appearanceTab });
+            creditsTab = new TabPage("Credits");
+            tabs.TabPages.AddRange(new[] { dialogueTab, giftTab, overviewTab, appearanceTab, creditsTab });
+            tabs.SelectedIndexChanged += (s, e) => { if (tabs.SelectedTab == overviewTab) RenderOverview(); };
 
             Controls.Add(tabs);
             Controls.Add(BuildHeader());
 
-            BuildRuleTab(dialogueTab, true);
-            BuildRuleTab(giftTab, false);
+            dialogueView = new RuleView(this, true);
+            giftView = new RuleView(this, false);
+            dialogueView.Build(dialogueTab);
+            giftView.Build(giftTab);
             BuildOverview();
             BuildAppearances();
+            BuildCredits();
+
+            FormClosing += (s, e) =>
+            {
+                if (e.CloseReason == CloseReason.ApplicationExitCall) return;
+                foreach (RuleView view in new[] { dialogueView, giftView })
+                {
+                    if (!view.Dirty) continue;
+                    tabs.SelectedTab = view.Page;
+                    DialogResult answer = MessageBox.Show("Save the changes to " + view.Noun + " before closing?", "Following Pokémon",
+                        MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+                    if (answer == DialogResult.Cancel || (answer == DialogResult.Yes && !view.Save())) { e.Cancel = true; return; }
+                }
+            };
             FormClosed += (s, e) =>
             {
                 animation?.Stop();
@@ -161,7 +182,7 @@ namespace NewEditor.Forms
             }
             protected override void OnPaint(PaintEventArgs e)
             {
-                e.Graphics.Clear(BackColor);
+                e.Graphics.Clear(PreviewBack);
                 if (image != null) DrawPixelated(e.Graphics, image, ClientRectangle);
                 else TextRenderer.DrawText(e.Graphics, Fallback, Font, ClientRectangle, Color.Gainsboro, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
             }
@@ -171,35 +192,25 @@ namespace NewEditor.Forms
 
         Control BuildHeader()
         {
-            var header = new Panel { Dock = DockStyle.Top, Height = 74, Padding = new Padding(10, 8, 10, 4) };
+            var header = new Panel { Dock = DockStyle.Top, Height = 76, Padding = new Padding(10, 8, 10, 4) };
             int appearances = data.Registry?.Entries.Count ?? 0;
             string status = "Following Pokémon runtime " + (data.Version != null ? data.Version + " " : "") + "detected · " +
-                (data.Enabled ? "following enabled" : "following disabled") + " · " + appearances + " appearances · " +
-                data.Dialogues.Count + " dialogue rules · " + data.Gifts.Count + " gift rules";
+                (data.Enabled ? "following enabled" : "following disabled") + " · " + appearances + " appearances";
             var title = new Label { Text = status, AutoSize = true, Location = new Point(10, 8), Font = new Font(Font, FontStyle.Bold) };
             var note = new Label
             {
                 AutoSize = true, Location = new Point(10, 30),
                 Text = data.Problems.Count > 0 ? "Some follower files could not be read: " + string.Join("; ", data.Problems)
-                    : "Read-only preview: editing and saving arrive in the next build."
+                    : "Saving a tab writes it into the loaded ROM. Use Save Rom on the main window to write the ROM file."
             };
             if (data.Problems.Count > 0) note.ForeColor = Color.IndianRed;
-            var label = new Label { Text = "View rules for Pokémon", AutoSize = true, Location = new Point(10, 52) };
-            overviewSpecies = SpeciesCombo(false);
-            overviewSpecies.Location = new Point(160, 48);
-            overviewSpecies.Width = 220;
-            overviewSpecies.SelectedIndexChanged += (s, e) => { RenderOverview(); tabs.SelectedTab = overviewTab; };
-            header.Controls.AddRange(new Control[] { title, note, label, overviewSpecies });
+            var label = new Label { Text = "View rules for Pokémon", AutoSize = true, Location = new Point(10, 53) };
+            overviewSpecies = new SearchComboBox { Location = new Point(160, 49), Width = 260 };
+            overviewSpecies.SetOptions(speciesOptions);
+            overviewSpecies.ValueChosen += (s, e) => { tabs.SelectedTab = overviewTab; RenderOverview(); };
+            var hint = new Label { Text = "Type a name or number to search.", AutoSize = true, Location = new Point(428, 53), ForeColor = SystemColors.GrayText };
+            header.Controls.AddRange(new Control[] { title, note, label, overviewSpecies, hint });
             return header;
-        }
-
-        ComboBox SpeciesCombo(bool withAny)
-        {
-            var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
-            if (withAny) combo.Items.Add(new Choice(0, "Any species"));
-            for (int i = 1; i < Math.Min(speciesNames.Count, 1024); i++)
-                combo.Items.Add(new Choice(i, SpeciesName(i) + " #" + i));
-            return combo;
         }
 
         class Choice
@@ -217,123 +228,7 @@ namespace NewEditor.Forms
             combo.SelectedIndex = combo.Items.Count > 0 ? 0 : -1;
         }
 
-        // ------------------------------------------------------------ Rule tabs
-
-        class RuleView
-        {
-            public bool dialogue;
-            public ListBox list;
-            public PixelBox sprite;
-            public Label spriteCaption;
-            public NumericUpDown zone, form, chance, slot, quantity;
-            public Label zoneName;
-            public ComboBox species, type, hp, friendship, status, facing, before, after, item;
-            public TextBox minX, maxX, minY, maxY, text, itemName;
-            public Control editor;
-        }
-        RuleView dialogueView, giftView;
-
-        void BuildRuleTab(TabPage page, bool dialogue)
-        {
-            var view = new RuleView { dialogue = dialogue };
-            if (dialogue) dialogueView = view; else giftView = view;
-
-            var split = Split(page, 420);
-            page.Padding = new Padding(6);
-
-            var intro = new Label
-            {
-                Dock = DockStyle.Top, Height = 56, Padding = new Padding(2, 4, 2, 0),
-                Text = dialogue
-                    ? "Conditional dialogue: special lines in a location or for a matching Pokémon. Rules are checked from top to bottom; if none matches, the normal HGSS-style reaction is used."
-                    : "Follower gifts: one-time rewards when the player talks to a matching follower. Each Pokémon remembers ten claim slots; the first matching unclaimed gift wins."
-            };
-            view.list = new ListBox { Dock = DockStyle.Fill, DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = 46, IntegralHeight = false };
-            int count = dialogue ? data.Dialogues.Count : data.Gifts.Count;
-            for (int i = 0; i < count; i++) view.list.Items.Add(i);
-            view.list.DrawItem += (s, e) => DrawRule(view, e);
-            view.list.SelectedIndexChanged += (s, e) => ShowRule(view);
-
-            var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(0, 4, 0, 0) };
-            foreach (string label in new[] { dialogue ? "Add dialogue rule" : "Add gift rule", "Remove", "Move up", "Move down", dialogue ? "Save dialogue" : "Save gifts" })
-                buttons.Controls.Add(new Button { Text = label, AutoSize = true, Enabled = false });
-            split.Panel1.Controls.Add(view.list);
-            split.Panel1.Controls.Add(intro);
-            split.Panel1.Controls.Add(buttons);
-
-            var editor = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, AutoScroll = true, Padding = new Padding(8, 4, 8, 8) };
-            editor.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            editor.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            view.editor = editor;
-            split.Panel2.Controls.Add(editor);
-
-            view.sprite = new PixelBox { Size = new Size(96, 96), Fallback = "Any" };
-            view.spriteCaption = new Label { AutoSize = true, Padding = new Padding(0, 36, 0, 0) };
-            editor.Controls.Add(view.sprite, 0, 0);
-            editor.Controls.Add(view.spriteCaption, 1, 0);
-            editor.SetColumnSpan(view.spriteCaption, 3);
-
-            int row = 1;
-            if (!dialogue)
-            {
-                Section(editor, "Reward", ref row);
-                view.slot = Number(0, 9);
-                view.item = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
-                for (int i = 1; i < itemNames.Count; i++) view.item.Items.Add(new Choice(i, ItemName(i) + " #" + i));
-                view.quantity = Number(1, 99);
-                view.itemName = new TextBox { Width = 220, MaxLength = 191 };
-                Pair(editor, ref row, "Claim slot", view.slot, "Item", view.item);
-                Pair(editor, ref row, "Quantity", view.quantity, "Name shown in dialogue", view.itemName);
-            }
-            Section(editor, dialogue ? "Location and Pokémon" : "When this gift applies", ref row);
-            view.zone = Number(0, 65535);
-            view.zoneName = new Label { AutoSize = true, Padding = new Padding(0, 6, 0, 0) };
-            view.species = SpeciesCombo(true);
-            view.form = Number(-1, 255);
-            view.type = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
-            view.type.Items.Add(new Choice(-1, "Any type"));
-            for (int i = 0; i < typeNames.Count; i++) view.type.Items.Add(new Choice(i, TypeName(i)));
-            Pair(editor, ref row, "Zone ID", view.zone, "", view.zoneName);
-            Pair(editor, ref row, "Species", view.species, "Form (-1 = any)", view.form);
-            Pair(editor, ref row, "Type", view.type, "", new Label());
-
-            Section(editor, "Player tile bounds (optional, inclusive; blank is unrestricted)", ref row);
-            view.minX = BoundBox(); view.maxX = BoundBox(); view.minY = BoundBox(); view.maxY = BoundBox();
-            Pair(editor, ref row, "Min X", view.minX, "Max X", view.maxX);
-            Pair(editor, ref row, "Min Y", view.minY, "Max Y", view.maxY);
-
-            Section(editor, "Optional conditions", ref row);
-            view.hp = Options(FollowerRules.HpConditions);
-            view.friendship = Options(FollowerRules.FriendshipConditions);
-            view.status = Options(FollowerRules.StatusConditions);
-            view.facing = Options(FollowerRules.FacingConditions);
-            Pair(editor, ref row, "HP", view.hp, "Friendship", view.friendship);
-            Pair(editor, ref row, "Status", view.status, "Direction", view.facing);
-            if (dialogue)
-            {
-                view.chance = Number(1, 100);
-                Pair(editor, ref row, "Trigger chance (%)", view.chance, "", new Label());
-                view.before = Options(FollowerRules.Animations);
-                view.after = Options(FollowerRules.Animations);
-                Pair(editor, ref row, "Before dialogue", view.before, "After dialogue", view.after);
-            }
-            view.text = new TextBox { Multiline = true, Height = 64, Width = 520, MaxLength = 191, ScrollBars = ScrollBars.Vertical };
-            Wide(editor, ref row, dialogue ? "Dialogue text" : "Success message", view.text);
-            var tokens = new Label { AutoSize = true, Text = dialogue ? "Tokens: {nickname}, {player}, {location}" : "Tokens: {nickname}, {player}, {location}, {item}" };
-            Wide(editor, ref row, "", tokens);
-            editor.RowCount = row + 1;
-
-            foreach (Control c in editor.Controls)
-                if (!(c is Label) && !(c is PixelBox)) c.Enabled = false;
-            // Selected once the list has its size, so the first card stays in view.
-            Load += (s, e) =>
-            {
-                if (count > 0) { view.list.SelectedIndex = 0; view.list.TopIndex = 0; }
-                else ShowRule(view);
-            };
-        }
+        static int ValueOf(ComboBox combo) => combo.SelectedItem is Choice choice ? choice.Value : 0;
 
         /// <summary>
         /// A left list and right detail pane. The divider is placed once the
@@ -348,10 +243,10 @@ namespace NewEditor.Forms
         }
 
         static NumericUpDown Number(int min, int max) => new NumericUpDown { Minimum = min, Maximum = max, Width = 90 };
-        static TextBox BoundBox() => new TextBox { Width = 90 };
+
         static ComboBox Options(string[] labels)
         {
-            var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
+            var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 150 };
             for (int i = 0; i < labels.Length; i++)
                 if (labels[i] != "") combo.Items.Add(new Choice(i, labels[i]));
             return combo;
@@ -382,16 +277,6 @@ namespace NewEditor.Forms
             row++;
         }
 
-        FollowerRuleConditions Rule(RuleView view, int index) =>
-            view.dialogue ? (FollowerRuleConditions)data.Dialogues[index] : data.Gifts[index];
-
-        string RulePrimary(RuleView view, int index)
-        {
-            if (view.dialogue) return data.Dialogues[index].Text.Replace('\n', ' ');
-            var gift = data.Gifts[index];
-            return ItemName(gift.ItemId) + (gift.Quantity > 1 ? " ×" + gift.Quantity : "") + " · claim slot " + gift.Slot;
-        }
-
         string RuleQualifier(FollowerRuleConditions rule)
         {
             var parts = new List<string> { rule.Species == null ? "Any species" : SpeciesName(rule.Species.Value) };
@@ -404,69 +289,431 @@ namespace NewEditor.Forms
             return string.Join(" · ", parts);
         }
 
-        /// <summary>A rule card: sprite, primary text, zone and qualifiers, like Pokeweb's rule summaries.</summary>
-        void DrawRule(RuleView view, DrawItemEventArgs e)
+        // ------------------------------------------------------------ Rule tabs
+
+        RuleView dialogueView, giftView;
+
+        /// <summary>
+        /// One rule tab: an ordered list of rule cards and the selected rule's
+        /// fields. Edits change a draft; Save encodes it into the ROM.
+        /// </summary>
+        class RuleView
         {
-            e.DrawBackground();
-            if (e.Index < 0) return;
-            var rule = Rule(view, e.Index);
-            var box = new Rectangle(e.Bounds.X + 4, e.Bounds.Y + 3, 40, 40);
-            using (var back = new SolidBrush(PreviewBack)) e.Graphics.FillRectangle(back, box);
-            Bitmap sprite = Thumbnail(PreviewAppearance(rule.Species, rule.Form));
-            if (sprite != null) DrawPixelated(e.Graphics, sprite, box);
-            else TextRenderer.DrawText(e.Graphics, rule.Species == null ? "Any" : "?", e.Font, box, Color.Gainsboro, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
-            var text = new Rectangle(box.Right + 8, e.Bounds.Y + 4, e.Bounds.Width - box.Width - 16, 18);
-            TextRenderer.DrawText(e.Graphics, (e.Index + 1) + ". " + RulePrimary(view, e.Index), e.Font, text, e.ForeColor, TextFormatFlags.EndEllipsis);
-            text.Y += 20;
-            TextRenderer.DrawText(e.Graphics, ZoneLabel(rule.Zone) + " · " + RuleQualifier(rule), e.Font, text, e.ForeColor, TextFormatFlags.EndEllipsis);
-            e.DrawFocusRectangle();
-        }
+            readonly FollowingPokemonEditor owner;
+            public readonly bool IsDialogue;
+            public TabPage Page;
+            public bool Dirty;
+            public string Noun => IsDialogue ? "dialogue" : "gifts";
+            readonly List<FollowerDialogueRule> dialogues;
+            readonly List<FollowerGiftRule> gifts;
+            bool loading;
 
-        static string Bound(int? value) => value == null ? "" : value.ToString();
+            ListBox list;
+            Label sizeLabel, statusLabel, empty;
+            Button remove, up, down, save, revert;
+            TableLayoutPanel editor;
+            PixelBox sprite;
+            Label spriteCaption, zoneName;
+            NumericUpDown zone, form, chance, slot, quantity;
+            SearchComboBox species, item;
+            ComboBox type, hp, friendship, status, facing, before, after;
+            TextBox minX, maxX, minY, maxY, text, itemName;
 
-        void ShowRule(RuleView view)
-        {
-            int index = view.list.SelectedIndex;
-            if (index < 0)
+            public RuleView(FollowingPokemonEditor owner, bool dialogue)
             {
-                view.sprite.Image = null;
-                view.spriteCaption.Text = (view.dialogue ? "No dialogue rules" : "No gift rules") + " in this ROM.";
-                return;
+                this.owner = owner;
+                IsDialogue = dialogue;
+                if (dialogue) dialogues = owner.data.Dialogues.Select(r => r.Copy()).ToList();
+                else gifts = owner.data.Gifts.Select(r => r.Copy()).ToList();
             }
-            var rule = Rule(view, index);
-            var appearance = PreviewAppearance(rule.Species, rule.Form);
-            view.sprite.Image = Thumbnail(appearance);
-            view.sprite.Fallback = rule.Species == null ? "Any" : "?";
-            view.spriteCaption.Text = (view.dialogue ? "Dialogue rule " : "Gift rule ") + (index + 1) + " · " +
-                (rule.Species == null ? "Any Pokémon" : SpeciesName(rule.Species.Value) + " #" + rule.Species) + " · " + ZoneLabel(rule.Zone);
 
-            view.zone.Value = rule.Zone;
-            view.zoneName.Text = ZoneLabel(rule.Zone);
-            SelectValue(view.species, rule.Species ?? 0);
-            view.form.Value = rule.Form ?? -1;
-            SelectValue(view.type, rule.Type ?? -1);
-            view.minX.Text = Bound(rule.MinX); view.maxX.Text = Bound(rule.MaxX);
-            view.minY.Text = Bound(rule.MinY); view.maxY.Text = Bound(rule.MaxY);
-            SelectValue(view.hp, rule.Hp ?? 0);
-            SelectValue(view.friendship, rule.Friendship ?? 0);
-            SelectValue(view.status, rule.Status ?? 0);
-            SelectValue(view.facing, rule.Facing ?? 0);
-            if (view.dialogue)
+            public int Count => IsDialogue ? dialogues.Count : gifts.Count;
+            public FollowerRuleConditions Rule(int index) => IsDialogue ? (FollowerRuleConditions)dialogues[index] : gifts[index];
+            public IEnumerable<FollowerRuleConditions> Rules => IsDialogue ? dialogues.Cast<FollowerRuleConditions>() : gifts;
+
+            public string Primary(int index)
             {
-                var d = data.Dialogues[index];
-                view.chance.Value = Math.Max(1, Math.Min(100, d.Chance));
-                SelectValue(view.before, d.BeforeAnimation ?? 0);
-                SelectValue(view.after, d.AfterAnimation ?? 0);
-                view.text.Text = d.Text.Replace("\n", Environment.NewLine);
+                if (IsDialogue) return dialogues[index].Text.Replace('\n', ' ');
+                var gift = gifts[index];
+                return owner.ItemName(gift.ItemId) + (gift.Quantity > 1 ? " ×" + gift.Quantity : "") + " · claim slot " + gift.Slot;
             }
-            else
+
+            public void Select(int index)
             {
-                var g = data.Gifts[index];
-                view.slot.Value = g.Slot;
-                SelectValue(view.item, g.ItemId);
-                view.quantity.Value = Math.Max(1, Math.Min(99, g.Quantity));
-                view.itemName.Text = g.ItemName;
-                view.text.Text = g.Text.Replace("\n", Environment.NewLine);
+                if (index >= 0 && index < list.Items.Count) list.SelectedIndex = index;
+            }
+
+            public void Build(TabPage page)
+            {
+                Page = page;
+                var split = owner.Split(page, 420);
+                page.Padding = new Padding(6);
+
+                var intro = new Label
+                {
+                    Dock = DockStyle.Top, Height = 56, Padding = new Padding(2, 4, 2, 0),
+                    Text = IsDialogue
+                        ? "Conditional dialogue: special lines in a location or for a matching Pokémon. Rules are checked from top to bottom; if none matches, the normal HGSS-style reaction is used."
+                        : "Follower gifts: one-time rewards when the player talks to a matching follower. Each Pokémon remembers ten claim slots; the first matching unclaimed gift wins."
+                };
+                list = new ListBox { Dock = DockStyle.Fill, DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = 46, IntegralHeight = false };
+                list.DrawItem += DrawCard;
+                list.SelectedIndexChanged += (s, e) => Show();
+
+                var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(0, 4, 0, 0) };
+                var add = new Button { Text = IsDialogue ? "Add dialogue rule" : "Add gift rule", AutoSize = true };
+                remove = new Button { Text = "Remove", AutoSize = true };
+                up = new Button { Text = "Move up", AutoSize = true };
+                down = new Button { Text = "Move down", AutoSize = true };
+                save = new Button { Text = IsDialogue ? "Save dialogue" : "Save gifts", AutoSize = true };
+                revert = new Button { Text = "Discard changes", AutoSize = true };
+                add.Click += (s, e) => Add();
+                remove.Click += (s, e) => Remove();
+                up.Click += (s, e) => Move(-1);
+                down.Click += (s, e) => Move(1);
+                save.Click += (s, e) => Save();
+                revert.Click += (s, e) => Revert();
+                buttons.Controls.AddRange(new Control[] { add, remove, up, down, save, revert });
+                sizeLabel = new Label { Dock = DockStyle.Bottom, Height = 20 };
+                statusLabel = new Label { Dock = DockStyle.Bottom, Height = 36 };
+                split.Panel1.Controls.Add(list);
+                split.Panel1.Controls.Add(intro);
+                split.Panel1.Controls.Add(statusLabel);
+                split.Panel1.Controls.Add(sizeLabel);
+                split.Panel1.Controls.Add(buttons);
+
+                empty = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Text = "No " + (IsDialogue ? "dialogue" : "gift") + " rules yet. Add one to get started.", Visible = false };
+                editor = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, AutoScroll = true, Padding = new Padding(8, 4, 8, 8) };
+                editor.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+                editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+                editor.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+                editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+                split.Panel2.Controls.Add(editor);
+                split.Panel2.Controls.Add(empty);
+                BuildFields();
+
+                Fill();
+                // Selected once the list has its size, so the first card stays in view.
+                owner.Load += (s, e) =>
+                {
+                    if (Count > 0) { list.SelectedIndex = 0; list.TopIndex = 0; }
+                    else Show();
+                    UpdateSize();
+                };
+            }
+
+            void BuildFields()
+            {
+                sprite = new PixelBox { Size = new Size(96, 96), Fallback = "Any" };
+                spriteCaption = new Label { AutoSize = true, Padding = new Padding(0, 36, 0, 0) };
+                editor.Controls.Add(sprite, 0, 0);
+                editor.Controls.Add(spriteCaption, 1, 0);
+                editor.SetColumnSpan(spriteCaption, 3);
+
+                int row = 1;
+                if (!IsDialogue)
+                {
+                    Section(editor, "Reward", ref row);
+                    slot = Number(0, 9);
+                    item = new SearchComboBox { Width = 300 };
+                    item.SetOptions(owner.itemOptions);
+                    quantity = Number(1, 99);
+                    itemName = new TextBox { Width = 300, MaxLength = 191 };
+                    Wide(editor, ref row, "Item", item);
+                    Pair(editor, ref row, "Claim slot", slot, "Quantity", quantity);
+                    Wide(editor, ref row, "Name shown in dialogue", itemName);
+                }
+                Section(editor, IsDialogue ? "Location and Pokémon" : "When this gift applies", ref row);
+                zone = Number(0, 65535);
+                zoneName = new Label { AutoSize = true, Padding = new Padding(0, 6, 0, 0) };
+                species = new SearchComboBox { Width = 300 };
+                species.SetOptions(new[] { new SearchComboBox.Option(0, "Any species") }.Concat(owner.speciesOptions));
+                form = Number(-1, 255);
+                type = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 150 };
+                type.Items.Add(new Choice(-1, "Any type"));
+                for (int i = 0; i < owner.typeNames.Count; i++) type.Items.Add(new Choice(i, owner.TypeName(i)));
+                Pair(editor, ref row, "Zone ID", zone, "", zoneName);
+                Wide(editor, ref row, "Species", species);
+                Pair(editor, ref row, "Form (-1 = any)", form, "Type", type);
+
+                Section(editor, "Player tile bounds (optional, inclusive; blank is unrestricted)", ref row);
+                minX = new TextBox { Width = 90 }; maxX = new TextBox { Width = 90 };
+                minY = new TextBox { Width = 90 }; maxY = new TextBox { Width = 90 };
+                Pair(editor, ref row, "Min X", minX, "Max X", maxX);
+                Pair(editor, ref row, "Min Y", minY, "Max Y", maxY);
+                var boundsNote = new Label { AutoSize = true, ForeColor = SystemColors.GrayText, Text = "Matrix tile coordinates from raw NPC X/Y fields; X increases right, Y increases down." };
+                Wide(editor, ref row, "", boundsNote);
+
+                Section(editor, "Optional conditions", ref row);
+                hp = Options(FollowerRules.HpConditions);
+                friendship = Options(FollowerRules.FriendshipConditions);
+                status = Options(FollowerRules.StatusConditions);
+                facing = Options(FollowerRules.FacingConditions);
+                Pair(editor, ref row, "HP", hp, "Friendship", friendship);
+                Pair(editor, ref row, "Status", status, "Direction", facing);
+                if (IsDialogue)
+                {
+                    chance = Number(1, 100);
+                    Pair(editor, ref row, "Trigger chance (%)", chance, "", new Label());
+                    before = Options(FollowerRules.Animations);
+                    after = Options(FollowerRules.Animations);
+                    Pair(editor, ref row, "Before dialogue", before, "After dialogue", after);
+                }
+                text = new TextBox { Multiline = true, Height = 64, Width = 460, MaxLength = 191, ScrollBars = ScrollBars.Vertical, AcceptsReturn = true };
+                Wide(editor, ref row, IsDialogue ? "Dialogue text" : "Success message", text);
+                var tokens = new Label { AutoSize = true, Text = IsDialogue ? "Tokens: {nickname}, {player}, {location}" : "Tokens: {nickname}, {player}, {location}, {item}" };
+                Wide(editor, ref row, "", tokens);
+                editor.RowCount = row + 1;
+
+                EventHandler changed = (s, e) => Apply();
+                foreach (NumericUpDown n in new[] { zone, form, chance, slot, quantity })
+                    if (n != null) n.ValueChanged += changed;
+                foreach (ComboBox c in new[] { type, hp, friendship, status, facing, before, after })
+                    if (c != null) c.SelectedIndexChanged += changed;
+                foreach (TextBox t in new[] { minX, maxX, minY, maxY, text, itemName })
+                    if (t != null) t.TextChanged += changed;
+                species.ValueChosen += changed;
+                if (item != null) item.ValueChosen += (s, e) => ItemChosen();
+            }
+
+            void Fill()
+            {
+                list.BeginUpdate();
+                list.Items.Clear();
+                for (int i = 0; i < Count; i++) list.Items.Add(i);
+                list.EndUpdate();
+            }
+
+            /// <summary>A rule card: sprite, primary text, zone and qualifiers, like Pokeweb's rule summaries.</summary>
+            void DrawCard(object sender, DrawItemEventArgs e)
+            {
+                e.DrawBackground();
+                if (e.Index < 0 || e.Index >= Count) return;
+                var rule = Rule(e.Index);
+                var box = new Rectangle(e.Bounds.X + 4, e.Bounds.Y + 3, 40, 40);
+                using (var back = new SolidBrush(PreviewBack)) e.Graphics.FillRectangle(back, box);
+                Bitmap image = owner.Thumbnail(owner.PreviewAppearance(rule.Species, rule.Form));
+                if (image != null) DrawPixelated(e.Graphics, image, box);
+                else TextRenderer.DrawText(e.Graphics, rule.Species == null ? "Any" : "?", e.Font, box, Color.Gainsboro, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                var line = new Rectangle(box.Right + 8, e.Bounds.Y + 4, e.Bounds.Width - box.Width - 16, 18);
+                TextRenderer.DrawText(e.Graphics, (e.Index + 1) + ". " + Primary(e.Index), e.Font, line, e.ForeColor, TextFormatFlags.EndEllipsis);
+                line.Y += 20;
+                TextRenderer.DrawText(e.Graphics, owner.ZoneLabel(rule.Zone) + " · " + owner.RuleQualifier(rule), e.Font, line, e.ForeColor, TextFormatFlags.EndEllipsis);
+                e.DrawFocusRectangle();
+            }
+
+            static string Bound(int? value) => value == null ? "" : value.ToString();
+
+            void Show()
+            {
+                int index = list.SelectedIndex;
+                bool any = index >= 0 && index < Count;
+                editor.Visible = any;
+                empty.Visible = !any;
+                remove.Enabled = any;
+                up.Enabled = any && index > 0;
+                down.Enabled = any && index < Count - 1;
+                if (!any) return;
+
+                loading = true;
+                var rule = Rule(index);
+                ShowCaption(index);
+                zone.Value = rule.Zone;
+                zoneName.Text = owner.ZoneLabel(rule.Zone);
+                species.Value = rule.Species ?? 0;
+                form.Value = rule.Form ?? -1;
+                SelectValue(type, rule.Type ?? -1);
+                minX.Text = Bound(rule.MinX); maxX.Text = Bound(rule.MaxX);
+                minY.Text = Bound(rule.MinY); maxY.Text = Bound(rule.MaxY);
+                SelectValue(hp, rule.Hp ?? 0);
+                SelectValue(friendship, rule.Friendship ?? 0);
+                SelectValue(status, rule.Status ?? 0);
+                SelectValue(facing, rule.Facing ?? 0);
+                if (IsDialogue)
+                {
+                    var d = dialogues[index];
+                    chance.Value = Math.Max(1, Math.Min(100, d.Chance));
+                    SelectValue(before, d.BeforeAnimation ?? 0);
+                    SelectValue(after, d.AfterAnimation ?? 0);
+                    text.Text = d.Text.Replace("\n", Environment.NewLine);
+                }
+                else
+                {
+                    var g = gifts[index];
+                    slot.Value = Math.Max(0, Math.Min(9, g.Slot));
+                    item.Value = g.ItemId;
+                    quantity.Value = Math.Max(1, Math.Min(99, g.Quantity));
+                    itemName.Text = g.ItemName;
+                    text.Text = g.Text.Replace("\n", Environment.NewLine);
+                }
+                loading = false;
+            }
+
+            void ShowCaption(int index)
+            {
+                var rule = Rule(index);
+                sprite.Image = owner.Thumbnail(owner.PreviewAppearance(rule.Species, rule.Form));
+                sprite.Fallback = rule.Species == null ? "Any" : "?";
+                spriteCaption.Text = (IsDialogue ? "Dialogue rule " : "Gift rule ") + (index + 1) + " · " +
+                    (rule.Species == null ? "Any Pokémon" : owner.SpeciesName(rule.Species.Value) + " #" + rule.Species) + " · " + owner.ZoneLabel(rule.Zone);
+            }
+
+            /// <summary>Copy the fields into the selected rule.</summary>
+            void Apply()
+            {
+                int index = list.SelectedIndex;
+                if (loading || index < 0 || index >= Count) return;
+                var rule = Rule(index);
+                rule.Zone = (int)zone.Value;
+                zoneName.Text = owner.ZoneLabel(rule.Zone);
+                rule.Species = species.Value > 0 ? species.Value : null;
+                rule.Form = form.Value >= 0 ? (int?)form.Value : null;
+                rule.Type = ValueOf(type) >= 0 ? (int?)ValueOf(type) : null;
+                string bad = null;
+                rule.MinX = ParseBound(minX, rule.MinX, "Min X", ref bad);
+                rule.MaxX = ParseBound(maxX, rule.MaxX, "Max X", ref bad);
+                rule.MinY = ParseBound(minY, rule.MinY, "Min Y", ref bad);
+                rule.MaxY = ParseBound(maxY, rule.MaxY, "Max Y", ref bad);
+                rule.Hp = Optional(hp);
+                rule.Friendship = Optional(friendship);
+                rule.Status = Optional(status);
+                rule.Facing = Optional(facing);
+                if (IsDialogue)
+                {
+                    var d = dialogues[index];
+                    d.Chance = (int)chance.Value;
+                    d.BeforeAnimation = Optional(before);
+                    d.AfterAnimation = Optional(after);
+                    d.Text = text.Text.Replace("\r\n", "\n");
+                }
+                else
+                {
+                    var g = gifts[index];
+                    g.Slot = (int)slot.Value;
+                    g.ItemId = item.Value ?? g.ItemId;
+                    g.Quantity = (int)quantity.Value;
+                    g.ItemName = itemName.Text;
+                    g.Text = text.Text.Replace("\r\n", "\n");
+                }
+                MarkDirty(bad);
+                ShowCaption(index);
+                list.Invalidate(list.GetItemRectangle(index));
+            }
+
+            static int? Optional(ComboBox combo) => ValueOf(combo) > 0 ? (int?)ValueOf(combo) : null;
+
+            static int? ParseBound(TextBox box, int? previous, string name, ref string bad)
+            {
+                string value = box.Text.Trim();
+                if (value.Length == 0) return null;
+                if (int.TryParse(value, out int parsed) && parsed >= -32768 && parsed <= 32767) return parsed;
+                bad = name + " must be a whole number from -32768 to 32767.";
+                return previous;
+            }
+
+            /// <summary>Pokeweb fills the dialogue name when it is blank or a placeholder; also when it was the old item's name.</summary>
+            void ItemChosen()
+            {
+                int index = list.SelectedIndex;
+                if (loading || index < 0) return;
+                var g = gifts[index];
+                string current = itemName.Text.Trim(), previous = owner.ItemName(g.ItemId);
+                g.ItemId = item.Value ?? g.ItemId;
+                if (current.Length == 0 || current == "Item" || System.Text.RegularExpressions.Regex.IsMatch(current, "^Item \\d+$") || current == previous)
+                    itemName.Text = owner.ItemName(g.ItemId);
+                Apply();
+            }
+
+            void MarkDirty(string problem = null)
+            {
+                Dirty = true;
+                Page.Text = (IsDialogue ? "Dialogue" : "Gifts") + " *";
+                statusLabel.ForeColor = problem != null ? Color.IndianRed : Color.Empty;
+                statusLabel.Text = problem ?? "Unsaved changes.";
+                UpdateSize();
+            }
+
+            /// <summary>The archive's size against the runtime's 4 KiB buffer, or why it can't be encoded yet.</summary>
+            void UpdateSize()
+            {
+                try
+                {
+                    int bytes = IsDialogue ? FollowerRules.EncodeDialogues(dialogues).Length : FollowerRules.EncodeGifts(gifts).Length;
+                    sizeLabel.ForeColor = Color.Empty;
+                    sizeLabel.Text = "Archive size: " + bytes.ToString("N0") + " / " + FollowerRules.MaxBytes.ToString("N0") + " bytes";
+                }
+                catch (ArgumentException ex)
+                {
+                    sizeLabel.ForeColor = Color.IndianRed;
+                    sizeLabel.Text = ex.Message;
+                }
+            }
+
+            void Add()
+            {
+                if (IsDialogue) dialogues.Add(new FollowerDialogueRule { Text = "{nickname} is looking around." });
+                else gifts.Add(new FollowerGiftRule { ItemId = 1, ItemName = owner.ItemName(1), Text = "{nickname} found a {item}!" });
+                Fill();
+                list.SelectedIndex = Count - 1;
+                MarkDirty();
+            }
+
+            void Remove()
+            {
+                int index = list.SelectedIndex;
+                if (index < 0) return;
+                if (IsDialogue) dialogues.RemoveAt(index); else gifts.RemoveAt(index);
+                Fill();
+                if (Count > 0) list.SelectedIndex = Math.Min(index, Count - 1); else Show();
+                MarkDirty();
+            }
+
+            void Move(int step)
+            {
+                int index = list.SelectedIndex, target = index + step;
+                if (index < 0 || target < 0 || target >= Count) return;
+                if (IsDialogue) { var r = dialogues[index]; dialogues[index] = dialogues[target]; dialogues[target] = r; }
+                else { var r = gifts[index]; gifts[index] = gifts[target]; gifts[target] = r; }
+                Fill();
+                list.SelectedIndex = target;
+                MarkDirty();
+            }
+
+            /// <summary>Encode the draft into the ROM. False when a rule is invalid; the reason is shown.</summary>
+            public bool Save()
+            {
+                try
+                {
+                    if (IsDialogue) owner.data.SaveDialogues(dialogues); else owner.data.SaveGifts(gifts);
+                }
+                catch (Exception ex) when (ex is ArgumentException || ex is InvalidOperationException)
+                {
+                    statusLabel.ForeColor = Color.IndianRed;
+                    statusLabel.Text = ex.Message;
+                    MessageBox.Show(ex.Message, "Following Pokémon", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return false;
+                }
+                Dirty = false;
+                Page.Text = IsDialogue ? "Dialogue" : "Gifts";
+                statusLabel.ForeColor = Color.Empty;
+                statusLabel.Text = "Saved " + Count + " " + (IsDialogue ? "dialogue" : "gift") + (Count == 1 ? " rule" : " rules") +
+                    " into the ROM. Save the ROM from the main window to keep them.";
+                UpdateSize();
+                return true;
+            }
+
+            void Revert()
+            {
+                if (!Dirty) return;
+                if (MessageBox.Show("Discard the unsaved changes to " + Noun + "?", "Following Pokémon", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+                if (IsDialogue) { dialogues.Clear(); dialogues.AddRange(owner.data.Dialogues.Select(r => r.Copy())); }
+                else { gifts.Clear(); gifts.AddRange(owner.data.Gifts.Select(r => r.Copy())); }
+                Dirty = false;
+                Page.Text = IsDialogue ? "Dialogue" : "Gifts";
+                statusLabel.Text = "";
+                Fill();
+                if (Count > 0) list.SelectedIndex = 0; else Show();
+                UpdateSize();
             }
         }
 
@@ -506,12 +753,12 @@ namespace NewEditor.Forms
             list.DrawItem += (s, e) =>
             {
                 e.DrawBackground();
-                if (e.Index < 0) return;
-                int index = (int)list.Items[e.Index];
                 RuleView view = dialogue ? dialogueView : giftView;
-                var rule = Rule(view, index);
+                if (e.Index < 0 || (int)list.Items[e.Index] >= view.Count) return;
+                int index = (int)list.Items[e.Index];
+                var rule = view.Rule(index);
                 var text = new Rectangle(e.Bounds.X + 6, e.Bounds.Y + 4, e.Bounds.Width - 12, 18);
-                TextRenderer.DrawText(e.Graphics, RulePrimary(view, index), e.Font, text, e.ForeColor, TextFormatFlags.EndEllipsis);
+                TextRenderer.DrawText(e.Graphics, view.Primary(index), e.Font, text, e.ForeColor, TextFormatFlags.EndEllipsis);
                 text.Y += 20;
                 TextRenderer.DrawText(e.Graphics, ZoneLabel(rule.Zone) + " · " + RuleQualifier(rule) + " · Rule " + (index + 1), e.Font, text, e.ForeColor, TextFormatFlags.EndEllipsis);
                 e.DrawFocusRectangle();
@@ -520,32 +767,35 @@ namespace NewEditor.Forms
             {
                 if (list.SelectedIndex < 0) return;
                 RuleView view = dialogue ? dialogueView : giftView;
-                tabs.SelectedTab = dialogue ? dialogueTab : giftTab;
-                view.list.SelectedIndex = (int)list.SelectedItem;
+                tabs.SelectedTab = view.Page;
+                view.Select((int)list.SelectedItem);
             };
             return list;
         }
 
         void RenderOverview()
         {
-            if (!(overviewSpecies.SelectedItem is Choice choice)) return;
-            int species = choice.Value;
+            if (overviewSpecies.Value == null) return;
+            int species = overviewSpecies.Value.Value;
             HashSet<int> types = SpeciesTypes(species);
             overviewSprite.Image = Thumbnail(PreviewAppearance(species, 0));
             overviewTitle.Text = SpeciesName(species) + " #" + species;
             overviewTypes.Text = types.Count > 0 ? string.Join(" / ", types.Select(TypeName)) + " · Double-click a rule to open it." : "Type data unavailable";
-            overviewDialogues.Items.Clear();
-            overviewGifts.Items.Clear();
-            for (int i = 0; i < data.Dialogues.Count; i++)
-                if (data.Dialogues[i].AppliesTo(species, types)) overviewDialogues.Items.Add(i);
-            for (int i = 0; i < data.Gifts.Count; i++)
-                if (data.Gifts[i].AppliesTo(species, types)) overviewGifts.Items.Add(i);
+            foreach (var pair in new[] { (overviewDialogues, dialogueView), (overviewGifts, giftView) })
+            {
+                pair.Item1.BeginUpdate();
+                pair.Item1.Items.Clear();
+                for (int i = 0; i < pair.Item2.Count; i++)
+                    if (pair.Item2.Rule(i).AppliesTo(species, types)) pair.Item1.Items.Add(i);
+                pair.Item1.EndUpdate();
+            }
         }
 
         // ---------------------------------------------------------- Appearances
 
         ListBox appearanceList;
-        NumericUpDown speciesFilter, followDistance, height;
+        TextBox appearanceSearch;
+        NumericUpDown followDistance, height;
         CheckBox fallbackOnly, walking;
         Label appearanceDetail;
         readonly PixelBox[] previews = new PixelBox[4];
@@ -561,20 +811,23 @@ namespace NewEditor.Forms
 
             var filters = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 64, WrapContents = true };
             int fallbacks = data.Registry?.Entries.Count(e => e.Placeholder) ?? 0;
-            filters.Controls.Add(new Label { AutoSize = true, Text = "Catalog: " + (data.Registry?.Entries.Count ?? 0) + " appearances · " + fallbacks + " fallback appearances", Padding = new Padding(0, 4, 0, 4) });
-            filters.SetFlowBreak(filters.Controls[0], true);
-            filters.Controls.Add(new Label { AutoSize = true, Text = "Species number (0 = all)", Padding = new Padding(0, 6, 0, 0) });
-            speciesFilter = Number(0, 1023);
+            var catalog = new Label { AutoSize = true, Text = "Catalog: " + (data.Registry?.Entries.Count ?? 0) + " appearances · " + fallbacks + " fallback appearances", Padding = new Padding(0, 4, 0, 4) };
+            filters.Controls.Add(catalog);
+            filters.SetFlowBreak(catalog, true);
+            filters.Controls.Add(new Label { AutoSize = true, Text = "Search", Padding = new Padding(0, 6, 0, 0) });
+            appearanceSearch = new TextBox { Width = 170 };
             fallbackOnly = new CheckBox { Text = "Fallback artwork only", AutoSize = true, Padding = new Padding(8, 2, 0, 0) };
-            filters.Controls.Add(speciesFilter);
+            filters.Controls.Add(appearanceSearch);
             filters.Controls.Add(fallbackOnly);
             appearanceList = new ListBox { Dock = DockStyle.Fill, DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = 40, IntegralHeight = false };
             appearanceList.DrawItem += DrawAppearance;
             appearanceList.SelectedIndexChanged += (s, e) => ShowAppearance();
-            speciesFilter.ValueChanged += (s, e) => FillAppearances();
+            appearanceSearch.TextChanged += (s, e) => FillAppearances();
             fallbackOnly.CheckedChanged += (s, e) => FillAppearances();
+            var searchHint = new Label { Dock = DockStyle.Bottom, Height = 20, ForeColor = SystemColors.GrayText, Text = "Search by species name or number, for example Eevee or 133." };
             split.Panel1.Controls.Add(appearanceList);
             split.Panel1.Controls.Add(filters);
+            split.Panel1.Controls.Add(searchHint);
 
             var right = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(10, 0, 0, 0) };
             split.Panel2.Controls.Add(right);
@@ -605,6 +858,7 @@ namespace NewEditor.Forms
             tuning.Controls.Add(height, 1, 1);
             tuning.Controls.Add(new Label { Text = "Sprite pixels; positive raises it. The shadow stays on the ground.", AutoSize = true, Padding = new Padding(6, 6, 0, 0) }, 2, 1);
             right.Controls.Add(tuning);
+            right.Controls.Add(new Label { AutoSize = true, ForeColor = SystemColors.GrayText, Text = "Follow distance and height become editable in a later build." });
 
             right.Controls.Add(new Label
             {
@@ -620,26 +874,44 @@ namespace NewEditor.Forms
             actions.Controls.Add(new Button { Text = "Import asset pack", AutoSize = true, Enabled = false });
             right.Controls.Add(actions);
 
-            var credits = new Label { AutoSize = true, MaximumSize = new Size(620, 0), Padding = new Padding(0, 16, 0, 0), ForeColor = SystemColors.GrayText };
-            credits.Text = "Sprite credits\n" + SpriteCredits + "\n\n" + string.Join("\n", OverworldCredits.Select(c => c[0] + " — " + c[1]));
-            right.Controls.Add(credits);
-
             animation = new Timer { Interval = 1000 / 12 };
             animation.Tick += (s, e) => { tick += 5; DrawPreviews(); };
             FillAppearances();
             animation.Start();
         }
 
+        void BuildCredits()
+        {
+            creditsTab.Padding = new Padding(12);
+            var credits = new TextBox
+            {
+                Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, BorderStyle = BorderStyle.None, ScrollBars = ScrollBars.Vertical,
+                Text = ("Sprite credits\n\n" + SpriteCredits + "\n\n" + string.Join("\n\n", OverworldCredits.Select(c => c[0] + "\n" + c[1]))).Replace("\n", Environment.NewLine)
+            };
+            creditsTab.Controls.Add(credits);
+        }
+
+        /// <summary>Species name anywhere in the text, or an exact species number ("133" or "#133").</summary>
+        bool MatchesSearch(FollowerAppearance a, string query)
+        {
+            if (query.Length == 0) return true;
+            string digits = query.TrimStart('#');
+            if (digits.Length > 0 && digits.All(char.IsDigit)) return int.TryParse(digits, out int number) && a.Species == number;
+            return SpeciesName(a.Species).IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         void FillAppearances()
         {
-            int species = (int)speciesFilter.Value;
+            string query = appearanceSearch.Text.Trim();
+            FollowerAppearance previous = SelectedAppearance;
             shownAppearances = (data.Registry?.Entries ?? new List<FollowerAppearance>())
-                .Where(e => (species == 0 || e.Species == species) && (!fallbackOnly.Checked || e.Placeholder)).ToList();
+                .Where(e => MatchesSearch(e, query) && (!fallbackOnly.Checked || e.Placeholder)).ToList();
             appearanceList.BeginUpdate();
             appearanceList.Items.Clear();
             for (int i = 0; i < shownAppearances.Count; i++) appearanceList.Items.Add(i);
             appearanceList.EndUpdate();
-            if (shownAppearances.Count > 0) appearanceList.SelectedIndex = 0;
+            int keep = previous == null ? -1 : shownAppearances.IndexOf(previous);
+            if (shownAppearances.Count > 0) appearanceList.SelectedIndex = keep >= 0 ? keep : 0;
             else ShowAppearance();
         }
 

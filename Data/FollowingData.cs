@@ -3,9 +3,12 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace NewEditor.Data
 {
@@ -93,6 +96,53 @@ namespace NewEditor.Data
             return data;
         }
 
+        /// <summary>
+        /// Replace the dialogue rules in the loaded ROM. Throws with the
+        /// reason when a rule is invalid or the archive would exceed 4 KiB;
+        /// nothing is changed then. Save the ROM to keep the result.
+        /// </summary>
+        public void SaveDialogues(List<FollowerDialogueRule> rules)
+        {
+            byte[] bytes = FollowerRules.EncodeDialogues(rules);
+            WriteFile(DialoguePath, bytes);
+            UpdateReceipt("dialoguesSha256", bytes);
+            Dialogues = rules.Select(r => r.Copy()).ToList();
+        }
+
+        /// <summary>Replace the gift rules in the loaded ROM; see SaveDialogues.</summary>
+        public void SaveGifts(List<FollowerGiftRule> rules)
+        {
+            byte[] bytes = FollowerRules.EncodeGifts(rules);
+            WriteFile(GiftPath, bytes);
+            UpdateReceipt("itemsSha256", bytes);
+            Gifts = rules.Select(r => r.Copy()).ToList();
+        }
+
+        void WriteFile(string path, byte[] bytes)
+        {
+            if (!fileSystem.fnt.reverseFileNames.TryGetValue(path, out int id))
+                throw new InvalidOperationException(path + " is missing from this ROM; it can't be added without reinstalling the follower runtime.");
+            int index = id - fileSystem.fnt.firstFile;
+            if (fileSystem.files[index] is NARC narc) narc.byteData = bytes;
+            else fileSystem.files[index] = bytes;
+        }
+
+        /// <summary>
+        /// Keep Pokeweb's install receipt in step, so its page still accepts the
+        /// ROM. Only the one hash changes; a receipt without that field is left.
+        /// </summary>
+        void UpdateReceipt(string field, byte[] bytes)
+        {
+            byte[] receipt = ReadFile(fileSystem, InstallPath);
+            if (receipt == null) return;
+            string text = Encoding.UTF8.GetString(receipt);
+            string hash;
+            using (SHA256 sha = SHA256.Create()) hash = BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+            var pattern = new Regex("(\"" + field + "\"\\s*:\\s*\")[0-9a-f]*(\")");
+            if (!pattern.IsMatch(text)) return;
+            WriteFile(InstallPath, Encoding.UTF8.GetBytes(pattern.Replace(text, "${1}" + hash + "${2}", 1)));
+        }
+
         /// <summary>A follower sprite (BTX) from a/0/4/8, or null.</summary>
         public byte[] GetResource(int resourceId)
         {
@@ -136,6 +186,22 @@ namespace NewEditor.Data
             count = narc.numFileEntries;
             List<byte> entry = narc.GetFileEntry(index);
             return entry == null ? null : entry.ToArray();
+        }
+
+        /// <summary>A one-member NARC laid out exactly as Pokeweb's NARC.save writes it.</summary>
+        public static byte[] PackNarc(byte[] member)
+        {
+            int padded = (member.Length + 3) & ~3;
+            var o = new List<byte>();
+            void U16(int v) { o.Add((byte)v); o.Add((byte)(v >> 8)); }
+            void U32(int v) { U16(v & 0xFFFF); U16(v >> 16 & 0xFFFF); }
+            o.AddRange(Encoding.ASCII.GetBytes("NARC")); U16(0xFEFF); U16(1); U32(0); U16(0x10); U16(3);
+            o.AddRange(Encoding.ASCII.GetBytes("BTAF")); U32(0x14); U32(1); U32(0); U32(member.Length);
+            o.AddRange(Encoding.ASCII.GetBytes("BTNF")); U32(0x10); o.AddRange(new byte[] { 4, 0, 0, 0, 0, 0, 1, 0 });
+            o.AddRange(Encoding.ASCII.GetBytes("GMIF")); U32(8 + padded); o.AddRange(member); o.AddRange(new byte[padded - member.Length]);
+            byte[] bytes = o.ToArray();
+            bytes[8] = (byte)bytes.Length; bytes[9] = (byte)(bytes.Length >> 8); bytes[10] = (byte)(bytes.Length >> 16); bytes[11] = (byte)(bytes.Length >> 24);
+            return bytes;
         }
 
         public static uint ReadU32(byte[] b, int at) => (uint)(b[at] | b[at + 1] << 8 | b[at + 2] << 16 | b[at + 3] << 24);
@@ -264,6 +330,8 @@ namespace NewEditor.Data
         public int? Species, Form, Type, Hp, Friendship, Status, Facing;
         public int? MinX, MaxX, MinY, MaxY;
 
+        public bool HasBounds => MinX != null || MaxX != null || MinY != null || MaxY != null;
+
         public bool AppliesTo(int species, ICollection<int> speciesTypes) =>
             (Species == null || Species == species) && (Type == null || speciesTypes.Contains(Type.Value));
     }
@@ -273,12 +341,14 @@ namespace NewEditor.Data
         public int Chance = 100;
         public int? BeforeAnimation, AfterAnimation;
         public string Text = "";
+        public FollowerDialogueRule Copy() => (FollowerDialogueRule)MemberwiseClone();
     }
 
     public class FollowerGiftRule : FollowerRuleConditions
     {
-        public int Slot, ItemId, Quantity = 1;
+        public int Slot, ItemId = 1, Quantity = 1;
         public string ItemName = "", Text = "";
+        public FollowerGiftRule Copy() => (FollowerGiftRule)MemberwiseClone();
     }
 
     public static class FollowerRules
@@ -338,6 +408,168 @@ namespace NewEditor.Data
             }
             return rules;
         }
+
+        public const int MaxBytes = 4096;
+
+        /// <summary>
+        /// Pokeweb's encodeFollowerDialogueNarc: rules without tile bounds keep
+        /// the older 20-byte layout (v1, or v2 with animations).
+        /// </summary>
+        public static byte[] EncodeDialogues(List<FollowerDialogueRule> rules)
+        {
+            var texts = new List<int[]>();
+            for (int i = 0; i < rules.Count; i++)
+            {
+                var r = rules[i];
+                string where = "Dialogue rule " + (i + 1) + ": ";
+                CheckConditions(r, where);
+                Check(r.Chance, 1, 100, where + "chance");
+                if (r.BeforeAnimation != null) Check(r.BeforeAnimation.Value, 1, 12, where + "before animation");
+                if (r.AfterAnimation != null) Check(r.AfterAnimation.Value, 1, 12, where + "after animation");
+                texts.Add(EncodeText(r.Text, false, where + "dialogue text"));
+            }
+            bool bounded = rules.Any(r => r.HasBounds);
+            int size = bounded ? 28 : 20, abi = bounded ? 3 : rules.Any(r => r.BeforeAnimation != null || r.AfterAnimation != null) ? 2 : 1;
+            int length = 16 + rules.Count * size + texts.Sum(t => t.Length * 2);
+            var d = new byte[length];
+            WriteHeader(d, 0x44435746, abi, rules.Count);
+            int cursor = 16 + rules.Count * size;
+            for (int i = 0; i < rules.Count; i++)
+            {
+                var r = rules[i];
+                int at = 16 + i * size;
+                WriteConditions(d, at, r, at + 4, at + 5, at + 6);
+                d[at + 10] = (byte)r.Chance; d[at + 11] = (byte)(r.BeforeAnimation ?? 0);
+                W32(d, at + 12, cursor); W16(d, at + 16, texts[i].Length); d[at + 18] = (byte)(r.AfterAnimation ?? 0);
+                if (bounded) d[at + 19] = (byte)WriteBounds(d, at + 20, r);
+                cursor = WriteText(d, cursor, texts[i]);
+            }
+            return Finish(d, "Conditional dialogue");
+        }
+
+        /// <summary>Pokeweb's encodeFollowerItemNarc: 28-byte rules, or 36 with tile bounds (v2).</summary>
+        public static byte[] EncodeGifts(List<FollowerGiftRule> rules)
+        {
+            var names = new List<int[]>();
+            var texts = new List<int[]>();
+            for (int i = 0; i < rules.Count; i++)
+            {
+                var r = rules[i];
+                string where = "Gift rule " + (i + 1) + ": ";
+                Check(r.Slot, 0, 9, where + "claim slot");
+                Check(r.ItemId, 1, 0xFFFE, where + "item");
+                Check(r.Quantity, 1, 99, where + "quantity");
+                CheckConditions(r, where);
+                names.Add(EncodeText(r.ItemName, false, where + "item name"));
+                texts.Add(EncodeText(r.Text, true, where + "success message"));
+            }
+            bool bounded = rules.Any(r => r.HasBounds);
+            int size = bounded ? 36 : 28;
+            int length = 16 + rules.Count * size + names.Sum(t => t.Length * 2) + texts.Sum(t => t.Length * 2);
+            var d = new byte[length];
+            WriteHeader(d, 0x49545746, bounded ? 2 : 1, rules.Count);
+            int cursor = 16 + rules.Count * size;
+            for (int i = 0; i < rules.Count; i++)
+            {
+                var r = rules[i];
+                int at = 16 + i * size;
+                WriteConditions(d, at, r, at + 7, at + 8, at + 9);
+                W16(d, at + 4, r.ItemId); d[at + 6] = (byte)r.Slot; d[at + 13] = (byte)r.Quantity;
+                W32(d, at + 14, cursor); W16(d, at + 18, names[i].Length); cursor = WriteText(d, cursor, names[i]);
+                W32(d, at + 20, cursor); W16(d, at + 24, texts[i].Length);
+                W16(d, at + 26, bounded ? WriteBounds(d, at + 28, r) : 0);
+                cursor = WriteText(d, cursor, texts[i]);
+            }
+            return Finish(d, "Follower gift");
+        }
+
+        /// <summary>what is "Rule N: field"; the message reads "Rule N: invalid field; use min to max."</summary>
+        static void Check(int value, int min, int max, string what)
+        {
+            if (value >= min && value <= max) return;
+            int split = what.IndexOf(": ");
+            string where = split < 0 ? "" : what.Substring(0, split + 2), field = split < 0 ? what : what.Substring(split + 2);
+            throw new ArgumentException(where + "invalid " + field + "; use " + min + " to " + max + ".");
+        }
+
+        static void CheckConditions(FollowerRuleConditions r, string where)
+        {
+            Check(r.Zone, 0, 0xFFFF, where + "zone");
+            if (r.Species != null) Check(r.Species.Value, 1, 1023, where + "species");
+            if (r.Form != null) Check(r.Form.Value, 0, 255, where + "form");
+            if (r.Form != null && r.Species == null) throw new ArgumentException(where + "a form needs a species.");
+            if (r.Type != null) Check(r.Type.Value, 0, 31, where + "type");
+            if (r.Hp != null) Check(r.Hp.Value, 1, 5, where + "HP condition");
+            if (r.Friendship != null) Check(r.Friendship.Value, 0, 10, where + "friendship condition");
+            if (r.Status != null) Check(r.Status.Value, 0, 8, where + "status condition");
+            if (r.Facing != null) Check(r.Facing.Value, 0, 4, where + "direction condition");
+            foreach (int? v in new[] { r.MinX, r.MaxX, r.MinY, r.MaxY })
+                if (v != null) Check(v.Value, -32768, 32767, where + "tile bound");
+            if (r.MinX != null && r.MaxX != null && r.MinX > r.MaxX) throw new ArgumentException(where + "Min X must not exceed Max X.");
+            if (r.MinY != null && r.MaxY != null && r.MinY > r.MaxY) throw new ArgumentException(where + "Min Y must not exceed Max Y.");
+        }
+
+        /// <summary>Text to UTF-16 words with tokens, newline 0xFFFE, ending 0xFFFF; at most 191 words.</summary>
+        static int[] EncodeText(string text, bool allowItem, string what)
+        {
+            if (string.IsNullOrWhiteSpace(text)) throw new ArgumentException(what + " is empty.");
+            text = text.Replace("\r\n", "\n");
+            string[] tokens = allowItem ? new[] { "{nickname}", "{player}", "{location}", "{item}" } : new[] { "{nickname}", "{player}", "{location}" };
+            var words = new List<int>();
+            for (int at = 0; at < text.Length;)
+            {
+                int token = Array.FindIndex(tokens, t => string.CompareOrdinal(text, at, t, 0, t.Length) == 0);
+                if (token >= 0) { words.Add(0xFFF0 + token); at += tokens[token].Length; continue; }
+                char c = text[at];
+                if (char.IsSurrogate(c) || c == 0 || c == 0xFFFF) throw new ArgumentException(what + " contains an unsupported character.");
+                words.Add(c == '\n' ? 0xFFFE : c);
+                at++;
+            }
+            if (words.Count + 1 > 192) throw new ArgumentException(what + " exceeds 191 characters.");
+            words.Add(0xFFFF);
+            return words.ToArray();
+        }
+
+        static void WriteHeader(byte[] d, uint magic, int abi, int count)
+        {
+            W32(d, 0, (int)magic); W16(d, 4, abi); W16(d, 6, count); W32(d, 8, d.Length);
+        }
+
+        static void WriteConditions(byte[] d, int at, FollowerRuleConditions r, int formAt, int typeAt, int hpAt)
+        {
+            W16(d, at, r.Zone); W16(d, at + 2, r.Species ?? 0);
+            d[formAt] = (byte)(r.Form ?? 255); d[typeAt] = (byte)(r.Type ?? 255);
+            d[hpAt] = (byte)(r.Hp ?? 0); d[hpAt + 1] = (byte)(r.Friendship ?? 0); d[hpAt + 2] = (byte)(r.Status ?? 0); d[hpAt + 3] = (byte)(r.Facing ?? 0);
+        }
+
+        static int WriteBounds(byte[] d, int at, FollowerRuleConditions r)
+        {
+            int mask = 0;
+            int?[] values = { r.MinX, r.MaxX, r.MinY, r.MaxY };
+            for (int i = 0; i < 4; i++)
+            {
+                if (values[i] != null) mask |= 1 << i;
+                W16(d, at + i * 2, values[i] ?? 0);
+            }
+            return mask;
+        }
+
+        static int WriteText(byte[] d, int at, int[] words)
+        {
+            foreach (int w in words) { W16(d, at, w); at += 2; }
+            return at;
+        }
+
+        static byte[] Finish(byte[] d, string what)
+        {
+            W32(d, 12, (int)FollowingData.Crc32(d, 16, d.Length - 16));
+            byte[] narc = FollowingData.PackNarc(d);
+            if (narc.Length > MaxBytes) throw new ArgumentException(what + " archive is " + narc.Length + " bytes; the runtime limit is " + MaxBytes + ".");
+            return narc;
+        }
+
+        static void W16(byte[] d, int at, int v) { d[at] = (byte)v; d[at + 1] = (byte)(v >> 8); }
+        static void W32(byte[] d, int at, int v) { W16(d, at, v & 0xFFFF); W16(d, at + 2, (v >> 16) & 0xFFFF); }
 
         static int CheckHeader(byte[] d, uint magic, int maxAbi)
         {

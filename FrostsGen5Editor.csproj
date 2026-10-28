@@ -207,6 +207,9 @@
     <Compile Include="Forms\FollowingPokemonEditor.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="Forms\SearchComboBox.cs">
+      <SubType>Component</SubType>
+    </Compile>
     <Compile Include="Forms\FileExplorer.cs">
       <SubType>Form</SubType>
     </Compile>

@@ -316,6 +316,7 @@ namespace NewEditor.Forms
             if (trainerEditor != null && !trainerEditor.IsDisposed) list.Add(trainerEditor);
             if (pokemartEditor != null && !pokemartEditor.IsDisposed) list.Add(pokemartEditor);
             if (grottoEditor != null && !grottoEditor.IsDisposed) list.Add(grottoEditor);
+            if (followingEditor != null && !followingEditor.IsDisposed) list.Add(followingEditor);
             if (overlayEditor != null && !overlayEditor.IsDisposed) list.Add(overlayEditor);
             if (typeSwapEditor != null && !typeSwapEditor.IsDisposed) list.Add(typeSwapEditor);
             if (presetMovesEditor != null && !presetMovesEditor.IsDisposed) list.Add(presetMovesEditor);
