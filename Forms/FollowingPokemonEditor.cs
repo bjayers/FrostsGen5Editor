@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.IO;
 using System.Linq;
 using System.Windows.Forms;
 
@@ -11,9 +12,8 @@ namespace NewEditor.Forms
 {
     /// <summary>
     /// Following Pokémon: the follower runtime's dialogue, gifts and appearances,
-    /// laid out after Pokeweb's Following Pokémon page. Dialogue and gifts are
-    /// edited as drafts and saved into the loaded ROM; appearances are read-only
-    /// for now.
+    /// laid out after Pokeweb's Following Pokémon page. Each tab edits a draft
+    /// that its Save button writes into the loaded ROM.
     /// </summary>
     public class FollowingPokemonEditor : Form
     {
@@ -32,7 +32,7 @@ namespace NewEditor.Forms
 
         readonly FollowingData data;
         readonly List<string> speciesNames, itemNames, typeNames, zoneNames;
-        readonly Dictionary<int, Bitmap> thumbnails = new Dictionary<int, Bitmap>();
+        readonly Dictionary<string, Bitmap> thumbnails = new Dictionary<string, Bitmap>();
         readonly List<SearchComboBox.Option> speciesOptions = new List<SearchComboBox.Option>();
         readonly List<SearchComboBox.Option> itemOptions = new List<SearchComboBox.Option>();
 
@@ -85,6 +85,13 @@ namespace NewEditor.Forms
                     DialogResult answer = MessageBox.Show("Save the changes to " + view.Noun + " before closing?", "Following Pokémon",
                         MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
                     if (answer == DialogResult.Cancel || (answer == DialogResult.Yes && !view.Save())) { e.Cancel = true; return; }
+                }
+                if (appearancesDirty)
+                {
+                    tabs.SelectedTab = appearanceTab;
+                    DialogResult answer = MessageBox.Show("Save the changes to appearances before closing?", "Following Pokémon",
+                        MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+                    if (answer == DialogResult.Cancel || (answer == DialogResult.Yes && !SaveAppearances())) e.Cancel = true;
                 }
             };
             FormClosed += (s, e) =>
@@ -150,11 +157,12 @@ namespace NewEditor.Forms
         Bitmap Thumbnail(FollowerAppearance appearance)
         {
             if (appearance == null) return null;
-            if (!thumbnails.TryGetValue(appearance.ResourceId, out Bitmap bitmap))
+            string key = "resource:" + appearance.ResourceId;
+            if (!thumbnails.TryGetValue(key, out Bitmap bitmap))
             {
                 try { bitmap = FollowerSprites.Frame(data.GetResource(appearance.ResourceId), appearance.Asymmetric, 1, 0, false); }
                 catch { bitmap = null; }
-                thumbnails[appearance.ResourceId] = bitmap;
+                thumbnails[key] = bitmap;
             }
             return bitmap;
         }
@@ -336,6 +344,13 @@ namespace NewEditor.Forms
                 if (IsDialogue) return dialogues[index].Text.Replace('\n', ' ');
                 var gift = gifts[index];
                 return owner.ItemName(gift.ItemId) + (gift.Quantity > 1 ? " ×" + gift.Quantity : "") + " · claim slot " + gift.Slot;
+            }
+
+            /// <summary>Redraw the cards and the selected rule's sprite after the sprites change.</summary>
+            public void Refresh()
+            {
+                list.Invalidate();
+                if (list.SelectedIndex >= 0 && list.SelectedIndex < Count) ShowCaption(list.SelectedIndex);
             }
 
             public void Select(int index)
@@ -795,23 +810,38 @@ namespace NewEditor.Forms
 
         ListBox appearanceList;
         TextBox appearanceSearch;
-        NumericUpDown followDistance, height;
+        NumericUpDown followDistance, height, shiftAmount;
+        ComboBox shiftScope;
         CheckBox fallbackOnly, walking;
-        Label appearanceDetail;
+        Label appearanceDetail, appearanceStatus, distanceNote;
         readonly PixelBox[] previews = new PixelBox[4];
         Bitmap[,] frames;
         Timer animation;
         int tick;
+        bool showingAppearance, appearancesDirty;
+        List<FollowerAppearance> appearanceDraft = new List<FollowerAppearance>();
+        byte[] landDraft;
+        Dictionary<string, PendingSprite> pendingSprites = new Dictionary<string, PendingSprite>();
         List<FollowerAppearance> shownAppearances = new List<FollowerAppearance>();
+
+        void ResetAppearanceDraft()
+        {
+            appearanceDraft = (data.Registry?.Entries ?? new List<FollowerAppearance>()).Select(e => e.Copy()).ToList();
+            landDraft = data.Positioning == null ? null : (byte[])data.Positioning.Land.Clone();
+            pendingSprites = new Dictionary<string, PendingSprite>();
+            appearancesDirty = false;
+            appearanceTab.Text = "Appearances";
+        }
 
         void BuildAppearances()
         {
+            ResetAppearanceDraft();
             appearanceTab.Padding = new Padding(8);
             var split = Split(appearanceTab, 400);
 
             var filters = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 64, WrapContents = true };
-            int fallbacks = data.Registry?.Entries.Count(e => e.Placeholder) ?? 0;
-            var catalog = new Label { AutoSize = true, Text = "Catalog: " + (data.Registry?.Entries.Count ?? 0) + " appearances · " + fallbacks + " fallback appearances", Padding = new Padding(0, 4, 0, 4) };
+            int fallbacks = appearanceDraft.Count(e => e.Placeholder);
+            var catalog = new Label { AutoSize = true, Text = "Catalog: " + appearanceDraft.Count + " appearances · " + fallbacks + " fallback appearances", Padding = new Padding(0, 4, 0, 4) };
             filters.Controls.Add(catalog);
             filters.SetFlowBreak(catalog, true);
             filters.Controls.Add(new Label { AutoSize = true, Text = "Search", Padding = new Padding(0, 6, 0, 0) });
@@ -848,31 +878,61 @@ namespace NewEditor.Forms
             right.Controls.Add(walking);
 
             var tuning = new TableLayoutPanel { AutoSize = true, ColumnCount = 3, Margin = new Padding(0, 4, 0, 4) };
-            followDistance = Number(0, 12);
+            followDistance = Number(0, FollowingData.MaxFollowDistance);
             height = Number(-128, 127);
-            followDistance.Enabled = height.Enabled = false;
             tuning.Controls.Add(new Label { Text = "Follow distance", AutoSize = true, Padding = new Padding(0, 6, 6, 0) }, 0, 0);
             tuning.Controls.Add(followDistance, 1, 0);
-            tuning.Controls.Add(new Label { Text = "World units behind the player, 0–12. 64-pixel followers add their own bonus.", AutoSize = true, Padding = new Padding(6, 6, 0, 0) }, 2, 0);
+            distanceNote = new Label { Text = "World units behind the player, 0–12. 64-pixel followers add their own bonus.", AutoSize = true, Padding = new Padding(6, 6, 0, 0) };
+            tuning.Controls.Add(distanceNote, 2, 0);
             tuning.Controls.Add(new Label { Text = "Height", AutoSize = true, Padding = new Padding(0, 6, 6, 0) }, 0, 1);
             tuning.Controls.Add(height, 1, 1);
             tuning.Controls.Add(new Label { Text = "Sprite pixels; positive raises it. The shadow stays on the ground.", AutoSize = true, Padding = new Padding(6, 6, 0, 0) }, 2, 1);
             right.Controls.Add(tuning);
-            right.Controls.Add(new Label { AutoSize = true, ForeColor = SystemColors.GrayText, Text = "Follow distance and height become editable in a later build." });
+            followDistance.ValueChanged += (s, e) => AppearanceEdited();
+            height.ValueChanged += (s, e) => AppearanceEdited();
+
+            var shift = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
+            shiftAmount = Number(-32, 32);
+            shiftAmount.Width = 60;
+            shiftScope = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 230 };
+            shiftScope.Items.AddRange(new object[] { "every appearance", "the appearances listed on the left" });
+            shiftScope.SelectedIndex = 0;
+            var shiftButton = new Button { Text = "Shift heights", AutoSize = true };
+            shiftButton.Click += (s, e) => ShiftHeights();
+            shift.Controls.Add(new Label { Text = "Shift height by", AutoSize = true, Padding = new Padding(0, 6, 0, 0) });
+            shift.Controls.Add(shiftAmount);
+            shift.Controls.Add(new Label { Text = "pixels for", AutoSize = true, Padding = new Padding(0, 6, 0, 0) });
+            shift.Controls.Add(shiftScope);
+            shift.Controls.Add(shiftButton);
+            right.Controls.Add(shift);
+            right.Controls.Add(new Label { AutoSize = true, ForeColor = SystemColors.GrayText, Text = "Positive raises, negative lowers. Heights stop at -128 and 127." });
 
             right.Controls.Add(new Label
             {
-                AutoSize = true, MaximumSize = new Size(620, 0), Padding = new Padding(0, 8, 0, 4),
+                AutoSize = true, MaximumSize = new Size(620, 0), Padding = new Padding(0, 12, 0, 4),
                 Text = "PNG layout: rows up, down, left, right; columns idle and step. Use 64×128 for 32-pixel frames or 128×256 for 64-pixel frames. Maximum 15 opaque DS colors plus transparency."
             });
             var actions = new FlowLayoutPanel { AutoSize = true };
+            var replace = new Button { Text = "Replace selected PNG", AutoSize = true };
             var export = new Button { Text = "Export selected PNG", AutoSize = true };
+            var exportPack = new Button { Text = "Export asset pack", AutoSize = true };
+            var importPack = new Button { Text = "Import asset pack", AutoSize = true };
+            replace.Click += (s, e) => ReplacePng();
             export.Click += (s, e) => ExportPng();
-            actions.Controls.Add(new Button { Text = "Replace selected PNG", AutoSize = true, Enabled = false });
-            actions.Controls.Add(export);
-            actions.Controls.Add(new Button { Text = "Export asset pack", AutoSize = true, Enabled = false });
-            actions.Controls.Add(new Button { Text = "Import asset pack", AutoSize = true, Enabled = false });
+            exportPack.Click += (s, e) => ExportPack();
+            importPack.Click += (s, e) => ImportPack();
+            actions.Controls.AddRange(new Control[] { replace, export, exportPack, importPack });
             right.Controls.Add(actions);
+
+            var saving = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 12, 0, 0) };
+            var save = new Button { Text = "Save appearances", AutoSize = true };
+            var revert = new Button { Text = "Discard changes", AutoSize = true };
+            save.Click += (s, e) => SaveAppearances();
+            revert.Click += (s, e) => RevertAppearances();
+            saving.Controls.AddRange(new Control[] { save, revert });
+            right.Controls.Add(saving);
+            appearanceStatus = new Label { AutoSize = true, MaximumSize = new Size(620, 0), Padding = new Padding(0, 4, 0, 0) };
+            right.Controls.Add(appearanceStatus);
 
             animation = new Timer { Interval = 1000 / 12 };
             animation.Tick += (s, e) => { tick += 5; DrawPreviews(); };
@@ -903,21 +963,38 @@ namespace NewEditor.Forms
         void FillAppearances()
         {
             string query = appearanceSearch.Text.Trim();
-            FollowerAppearance previous = SelectedAppearance;
-            shownAppearances = (data.Registry?.Entries ?? new List<FollowerAppearance>())
-                .Where(e => MatchesSearch(e, query) && (!fallbackOnly.Checked || e.Placeholder)).ToList();
+            string previous = SelectedAppearance?.Key;
+            shownAppearances = appearanceDraft.Where(e => MatchesSearch(e, query) && (!fallbackOnly.Checked || e.Placeholder)).ToList();
             appearanceList.BeginUpdate();
             appearanceList.Items.Clear();
             for (int i = 0; i < shownAppearances.Count; i++) appearanceList.Items.Add(i);
             appearanceList.EndUpdate();
-            int keep = previous == null ? -1 : shownAppearances.IndexOf(previous);
+            int keep = previous == null ? -1 : shownAppearances.FindIndex(e => e.Key == previous);
             if (shownAppearances.Count > 0) appearanceList.SelectedIndex = keep >= 0 ? keep : 0;
             else ShowAppearance();
         }
 
         string AppearanceLabel(FollowerAppearance a) =>
             SpeciesName(a.Species) + " #" + a.Species + " · form " + a.Form + " · " + FollowerAppearance.GenderNames[Math.Min(2, a.Gender)] +
-            " · " + (a.Shiny ? "shiny" : "normal") + (a.Placeholder ? " · placeholder" : "");
+            " · " + (a.Shiny ? "shiny" : "normal") + (a.Placeholder && !pendingSprites.ContainsKey(a.Key) ? " · placeholder" : "") +
+            (a.OffsetY != 0 ? " · height " + a.OffsetY : "") + (pendingSprites.ContainsKey(a.Key) ? " · new sprite" : "");
+
+        /// <summary>The draft's sprite: a pending replacement, or the ROM's.</summary>
+        byte[] DraftSprite(FollowerAppearance a) => data.Sprite(a, pendingSprites);
+        bool DraftAsymmetric(FollowerAppearance a) => pendingSprites.TryGetValue(a.Key, out PendingSprite p) ? p.Asymmetric : a.Asymmetric;
+
+        Bitmap DraftThumbnail(FollowerAppearance a)
+        {
+            if (!pendingSprites.ContainsKey(a.Key)) return Thumbnail(a);
+            string key = "pending:" + a.Key;
+            if (!thumbnails.TryGetValue(key, out Bitmap bitmap))
+            {
+                try { bitmap = FollowerSprites.Frame(DraftSprite(a), DraftAsymmetric(a), 1, 0, false); }
+                catch { bitmap = null; }
+                thumbnails[key] = bitmap;
+            }
+            return bitmap;
+        }
 
         void DrawAppearance(object sender, DrawItemEventArgs e)
         {
@@ -926,7 +1003,7 @@ namespace NewEditor.Forms
             var a = shownAppearances[e.Index];
             var box = new Rectangle(e.Bounds.X + 4, e.Bounds.Y + 2, 36, 36);
             using (var back = new SolidBrush(PreviewBack)) e.Graphics.FillRectangle(back, box);
-            Bitmap sprite = Thumbnail(a);
+            Bitmap sprite = DraftThumbnail(a);
             if (sprite != null) DrawPixelated(e.Graphics, sprite, box);
             var text = new Rectangle(box.Right + 8, e.Bounds.Y, e.Bounds.Width - box.Width - 16, e.Bounds.Height);
             TextRenderer.DrawText(e.Graphics, AppearanceLabel(a), e.Font, text, e.ForeColor, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
@@ -934,7 +1011,7 @@ namespace NewEditor.Forms
         }
 
         FollowerAppearance SelectedAppearance =>
-            appearanceList.SelectedIndex >= 0 && appearanceList.SelectedIndex < shownAppearances.Count ? shownAppearances[appearanceList.SelectedIndex] : null;
+            appearanceList != null && appearanceList.SelectedIndex >= 0 && appearanceList.SelectedIndex < shownAppearances.Count ? shownAppearances[appearanceList.SelectedIndex] : null;
 
         void DisposeFrames()
         {
@@ -943,44 +1020,114 @@ namespace NewEditor.Forms
             frames = null;
         }
 
+        /// <summary>The runtime's follow distance for a draft row: the largest of its four gaps, or -1 without a row.</summary>
+        int DraftDistance(FollowerAppearance a)
+        {
+            int row = a.DescriptorRow - FollowingData.StockRows;
+            if (landDraft == null || row < 0 || row * 12 + 4 > landDraft.Length) return -1;
+            int gap = 0;
+            for (int i = 0; i < 4; i++) gap = Math.Max(gap, landDraft[row * 12 + i]);
+            return gap;
+        }
+
         void ShowAppearance()
         {
             DisposeFrames();
             var a = SelectedAppearance;
+            showingAppearance = true;
             if (a == null)
             {
                 appearanceDetail.Text = "No matching appearances.";
                 foreach (var p in previews) p.Image = null;
+                showingAppearance = false;
                 return;
             }
-            byte[] resource = data.GetResource(a.ResourceId);
+            byte[] resource = DraftSprite(a);
+            bool asymmetric = DraftAsymmetric(a);
             frames = new Bitmap[4, 2];
             for (int d = 0; d < 4; d++)
                 for (int pose = 0; pose < 2; pose++)
                 {
-                    try { frames[d, pose] = FollowerSprites.Frame(resource, a.Asymmetric, d, pose == 0 ? 0 : (d == 1 ? 5 : 10), true); }
+                    try { frames[d, pose] = FollowerSprites.Frame(resource, asymmetric, d, pose == 0 ? 0 : (d == 1 ? 5 : 10), true); }
                     catch { frames[d, pose] = null; }
                 }
-            int distance = data.FollowDistance(a);
-            followDistance.Value = Math.Max(0, Math.Min(12, distance));
-            height.Value = a.OffsetY;
+            int distance = DraftDistance(a);
+            followDistance.Enabled = distance >= 0;
+            followDistance.Value = Math.Max(0, Math.Min(FollowingData.MaxFollowDistance, distance));
+            distanceNote.Text = distance >= 0 ? "World units behind the player, 0–12. 64-pixel followers add their own bonus."
+                : "This ROM has no positioning row for it; the runtime uses its default distance.";
+            height.Value = Math.Max(-128, Math.Min(127, a.OffsetY));
+            int size = frames[0, 0]?.Width ?? a.Size;
             appearanceDetail.Text = AppearanceLabel(a) + "\n" +
-                (a.Placeholder ? "Fallback artwork (shared with another appearance)" : "Own artwork") + " · " + a.Size + "-pixel frames · " +
-                (a.Asymmetric ? "8 frames" : "6 frames, right mirrored from left") + " · resource " + a.ResourceId + " · descriptor row " + a.DescriptorRow +
-                (distance < 0 ? "\nNo positioning row: the runtime uses its default distance." : "");
+                (pendingSprites.ContainsKey(a.Key) ? "New sprite, saved with the next appearance save" : a.Placeholder ? "Fallback artwork (shared with another appearance)" : "Own artwork") +
+                " · " + size + "-pixel frames · " + (asymmetric ? "8 frames" : "6 frames, right mirrored from left") +
+                " · resource " + a.ResourceId + " · descriptor row " + a.DescriptorRow;
             DrawPreviews();
+            showingAppearance = false;
         }
 
-        /// <summary>Four frames per direction at 12 fps, as Pokeweb's preview cycles ticks 0, 5, 10 and 15.</summary>
-        void DrawPreviews()
+        void MarkAppearancesDirty(string message)
         {
-            if (frames == null) return;
-            for (int d = 0; d < 4; d++)
+            appearancesDirty = true;
+            appearanceTab.Text = "Appearances *";
+            appearanceStatus.ForeColor = Color.Empty;
+            appearanceStatus.Text = message;
+        }
+
+        /// <summary>Follow distance fills all four gaps of the row, the one value the runtime uses.</summary>
+        void AppearanceEdited()
+        {
+            var a = SelectedAppearance;
+            if (showingAppearance || a == null) return;
+            a.OffsetY = (int)height.Value;
+            int row = a.DescriptorRow - FollowingData.StockRows;
+            if (followDistance.Enabled && landDraft != null && row >= 0 && row * 12 + 4 <= landDraft.Length)
+                for (int i = 0; i < 4; i++) landDraft[row * 12 + i] = (byte)followDistance.Value;
+            MarkAppearancesDirty("Unsaved changes.");
+            appearanceList.Invalidate(appearanceList.GetItemRectangle(appearanceList.SelectedIndex));
+        }
+
+        void ShiftHeights()
+        {
+            int amount = (int)shiftAmount.Value;
+            if (amount == 0) return;
+            List<FollowerAppearance> scope = shiftScope.SelectedIndex == 0 ? appearanceDraft : shownAppearances;
+            if (MessageBox.Show("Shift the height of " + scope.Count + " appearances by " + (amount > 0 ? "+" : "") + amount + " pixels?", "Following Pokémon",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            int clamped = 0;
+            foreach (FollowerAppearance a in scope)
             {
-                int phase = walking.Checked ? tick % 20 : 0;
-                int pose = d == 1 ? (phase >= 5 && phase < 15 ? 1 : 0) : (phase >= 10 ? 1 : 0);
-                previews[d].Image = frames[d, pose];
+                int target = a.OffsetY + amount, value = Math.Max(-128, Math.Min(127, target));
+                if (value != target) clamped++;
+                a.OffsetY = value;
             }
+            MarkAppearancesDirty("Shifted " + scope.Count + " heights by " + (amount > 0 ? "+" : "") + amount +
+                (clamped > 0 ? "; " + clamped + " stopped at the -128 to 127 limit" : "") + ". Unsaved.");
+            appearanceList.Invalidate();
+            ShowAppearance();
+        }
+
+        void ReplacePng()
+        {
+            var a = SelectedAppearance;
+            if (a == null) return;
+            var open = new OpenFileDialog { Filter = "PNG image|*.png", Title = "Replace " + AppearanceLabel(a) };
+            if (open.ShowDialog() != DialogResult.OK) return;
+            try
+            {
+                byte[] btx;
+                using (var image = new Bitmap(open.FileName)) btx = FollowerSprites.EncodeSheet(image);
+                pendingSprites[a.Key] = new PendingSprite { Btx = btx, Asymmetric = true, Placeholder = false };
+                thumbnails.Remove("pending:" + a.Key);
+            }
+            catch (Exception ex) when (ex is InvalidDataException || ex is ArgumentException || ex is OutOfMemoryException || ex is IOException)
+            {
+                MessageBox.Show(ex is OutOfMemoryException ? "The file isn't a readable PNG." : ex.Message, "Replace PNG", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            MarkAppearancesDirty("Replaced the sprite for " + AppearanceLabel(a) + ". Unsaved.");
+            appearanceList.Invalidate();
+            ShowAppearance();
         }
 
         /// <summary>The selected appearance as a two-column sheet: rows up, down, left, right; idle then step.</summary>
@@ -998,6 +1145,155 @@ namespace NewEditor.Forms
                         for (int pose = 0; pose < 2; pose++)
                             if (frames[d, pose] != null) g.DrawImageUnscaled(frames[d, pose], pose * size, d * size);
                 sheet.Save(save.FileName, ImageFormat.Png);
+            }
+        }
+
+        /// <summary>Pokeweb's asset pack: manifest.json plus one BTX sprite per appearance.</summary>
+        void ExportPack()
+        {
+            var save = new SaveFileDialog { Filter = "Zip archive|*.zip", FileName = "following-assets.zip" };
+            if (save.ShowDialog() != DialogResult.OK) return;
+            Cursor = Cursors.WaitCursor;
+            try
+            {
+                var manifest = new System.Text.StringBuilder("{\n  \"schemaVersion\": 1,\n  \"entries\": [");
+                using (var zip = new System.IO.Compression.ZipArchive(System.IO.File.Create(save.FileName), System.IO.Compression.ZipArchiveMode.Create))
+                {
+                    for (int i = 0; i < appearanceDraft.Count; i++)
+                    {
+                        var a = appearanceDraft[i];
+                        byte[] sprite = DraftSprite(a);
+                        if (sprite == null) continue;
+                        string path = "assets/" + a.Key.Replace(':', '-') + ".btx";
+                        using (var stream = zip.CreateEntry(path, System.IO.Compression.CompressionLevel.Optimal).Open()) stream.Write(sprite, 0, sprite.Length);
+                        bool pending = pendingSprites.ContainsKey(a.Key);
+                        manifest.Append(i == 0 ? "\n" : ",\n").Append("    { \"key\": { \"species\": ").Append(a.Species).Append(", \"form\": ").Append(a.Form)
+                            .Append(", \"gender\": ").Append(a.Gender).Append(", \"shiny\": ").Append(a.Shiny ? "true" : "false")
+                            .Append(" }, \"path\": \"").Append(path).Append("\", \"profile\": \"").Append(DraftAsymmetric(a) ? "pokemon-asymmetric" : "pokemon-mirrored")
+                            .Append("\", \"source\": \"").Append(pending ? "png" : "stock").Append("\", \"placeholder\": ")
+                            .Append(!pending && a.Placeholder ? "true" : "false").Append(" }");
+                    }
+                    manifest.Append("\n  ]\n}\n");
+                    byte[] json = System.Text.Encoding.UTF8.GetBytes(manifest.ToString());
+                    using (var stream = zip.CreateEntry("manifest.json").Open()) stream.Write(json, 0, json.Length);
+                }
+                appearanceStatus.ForeColor = Color.Empty;
+                appearanceStatus.Text = "Exported " + appearanceDraft.Count + " appearances to " + System.IO.Path.GetFileName(save.FileName) + ".";
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                MessageBox.Show(ex.Message, "Export asset pack", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally { Cursor = Cursors.Default; }
+        }
+
+        /// <summary>Read a Pokeweb asset pack; each listed appearance gets its sprite as a pending replacement.</summary>
+        void ImportPack()
+        {
+            var open = new OpenFileDialog { Filter = "Zip archive|*.zip", Title = "Import asset pack" };
+            if (open.ShowDialog() != DialogResult.OK) return;
+            Cursor = Cursors.WaitCursor;
+            int imported = 0, unknown = 0;
+            var problems = new List<string>();
+            try
+            {
+                if (new System.IO.FileInfo(open.FileName).Length > 64 * 1024 * 1024) throw new InvalidDataException("The asset pack is larger than 64 MiB.");
+                var byKey = appearanceDraft.ToDictionary(e => e.Key);
+                var staged = new Dictionary<string, PendingSprite>();
+                using (var zip = System.IO.Compression.ZipFile.OpenRead(open.FileName))
+                {
+                    var manifestEntry = zip.GetEntry("manifest.json") ?? throw new InvalidDataException("The asset pack has no manifest.json.");
+                    System.Text.Json.JsonDocument manifest;
+                    using (var stream = manifestEntry.Open()) manifest = System.Text.Json.JsonDocument.Parse(stream);
+                    using (manifest)
+                    {
+                        var root = manifest.RootElement;
+                        if (!root.TryGetProperty("schemaVersion", out var version) || version.GetInt32() != 1 || !root.TryGetProperty("entries", out var entries) ||
+                            entries.ValueKind != System.Text.Json.JsonValueKind.Array || entries.GetArrayLength() > 6144)
+                            throw new InvalidDataException("Unsupported asset pack manifest.");
+                        foreach (var item in entries.EnumerateArray())
+                        {
+                            var k = item.GetProperty("key");
+                            string key = k.GetProperty("species").GetInt32() + ":" + k.GetProperty("form").GetInt32() + ":" + k.GetProperty("gender").GetInt32() + ":" +
+                                (k.GetProperty("shiny").GetBoolean() ? 1 : 0);
+                            if (!byKey.ContainsKey(key)) { unknown++; continue; }
+                            string path = item.GetProperty("path").GetString();
+                            var entry = zip.GetEntry(path);
+                            if (entry == null || entry.Length > 2 * 1024 * 1024) { problems.Add(key + ": sprite file missing or too large"); continue; }
+                            var bytes = new byte[entry.Length];
+                            using (var stream = entry.Open())
+                                for (int read = 0; read < bytes.Length;) { int n = stream.Read(bytes, read, bytes.Length - read); if (n <= 0) break; read += n; }
+                            bool asymmetric = item.TryGetProperty("profile", out var profile) ? profile.GetString() == "pokemon-asymmetric" : FollowerSprites.IsAsymmetric(bytes);
+                            try { FollowerSprites.Validate(bytes, asymmetric, out _); }
+                            catch (InvalidDataException ex) { problems.Add(key + ": " + ex.Message); continue; }
+                            bool placeholder = item.TryGetProperty("placeholder", out var flag) && flag.ValueKind == System.Text.Json.JsonValueKind.True;
+                            staged[key] = new PendingSprite { Btx = bytes, Asymmetric = asymmetric, Placeholder = placeholder };
+                            imported++;
+                        }
+                    }
+                }
+                foreach (var pair in staged) { pendingSprites[pair.Key] = pair.Value; thumbnails.Remove("pending:" + pair.Key); }
+            }
+            catch (Exception ex) when (ex is InvalidDataException || ex is IOException || ex is System.Text.Json.JsonException || ex is KeyNotFoundException || ex is InvalidOperationException)
+            {
+                Cursor = Cursors.Default;
+                MessageBox.Show("The asset pack could not be read: " + ex.Message, "Import asset pack", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            Cursor = Cursors.Default;
+            if (imported > 0) MarkAppearancesDirty("Imported " + imported + " sprites. Unsaved.");
+            if (unknown > 0 || problems.Count > 0)
+                MessageBox.Show("Imported " + imported + " sprites." + (unknown > 0 ? "\n" + unknown + " appearances aren't in this ROM's catalog and were skipped." : "") +
+                    (problems.Count > 0 ? "\n" + problems.Count + " were refused:\n" + string.Join("\n", problems.Take(10)) + (problems.Count > 10 ? "\n…" : "") : ""),
+                    "Import asset pack", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            appearanceList.Invalidate();
+            ShowAppearance();
+        }
+
+        public bool SaveAppearances()
+        {
+            if (!appearancesDirty) return true;
+            Cursor = Cursors.WaitCursor;
+            try { data.SaveAppearances(appearanceDraft, landDraft, pendingSprites); }
+            catch (Exception ex) when (ex is ArgumentException || ex is InvalidOperationException || ex is InvalidDataException)
+            {
+                Cursor = Cursors.Default;
+                appearanceStatus.ForeColor = Color.IndianRed;
+                appearanceStatus.Text = ex.Message;
+                MessageBox.Show(ex.Message, "Following Pokémon", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+            Cursor = Cursors.Default;
+            int sprites = pendingSprites.Count;
+            foreach (Bitmap b in thumbnails.Values) b?.Dispose();
+            thumbnails.Clear();
+            ResetAppearanceDraft();
+            FillAppearances();
+            dialogueView.Refresh();
+            giftView.Refresh();
+            appearanceStatus.ForeColor = Color.Empty;
+            appearanceStatus.Text = "Saved appearances" + (sprites > 0 ? " and " + sprites + " sprites" : "") + " into the ROM. Save the ROM from the main window to keep them.";
+            return true;
+        }
+
+        void RevertAppearances()
+        {
+            if (!appearancesDirty) return;
+            if (MessageBox.Show("Discard the unsaved changes to appearances?", "Following Pokémon", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            ResetAppearanceDraft();
+            appearanceStatus.Text = "";
+            FillAppearances();
+        }
+
+        /// <summary>Four frames per direction at 12 fps, as Pokeweb's preview cycles ticks 0, 5, 10 and 15.</summary>
+        void DrawPreviews()
+        {
+            if (frames == null) return;
+            for (int d = 0; d < 4; d++)
+            {
+                int phase = walking.Checked ? tick % 20 : 0;
+                int pose = d == 1 ? (phase >= 5 && phase < 15 ? 1 : 0) : (phase >= 10 ? 1 : 0);
+                previews[d].Image = frames[d, pose];
             }
         }
     }

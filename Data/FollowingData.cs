@@ -16,7 +16,7 @@ namespace NewEditor.Data
     /// The Following Pokémon runtime's ROM data, read the way the runtime and
     /// Pokeweb read it. Formats match Pokeweb's followingPokemon*.ts decoders.
     /// </summary>
-    public class FollowingData
+    public partial class FollowingData
     {
         public const string RegistryPath = "following/runtime-registry.bin";
         public const string NativePath = "following/native.bin";
@@ -28,6 +28,8 @@ namespace NewEditor.Data
         public const int StockRows = 1008;
 
         public FollowerRegistry Registry;
+        /// <summary>The registry as loaded or last saved; appearance saves patch it in place.</summary>
+        public byte[] RegistryBytes;
         public List<FollowerDialogueRule> Dialogues = new List<FollowerDialogueRule>();
         public List<FollowerGiftRule> Gifts = new List<FollowerGiftRule>();
         public FollowerPositioning Positioning;
@@ -37,7 +39,7 @@ namespace NewEditor.Data
         /// <summary>Files that exist but could not be read; the rest still loads.</summary>
         public List<string> Problems = new List<string>();
 
-        NDSFileSystem fileSystem;
+        internal NDSFileSystem fileSystem;
 
         /// <summary>
         /// Read the follower data, or null when the runtime isn't installed: no
@@ -68,6 +70,7 @@ namespace NewEditor.Data
             if (native.Length < 32 || ReadU32(native, 0) != 0x544E5746) data.Problems.Add("native.bin is not a follower config.");
             else data.Enabled = ReadU32(native, 4) == 1;
 
+            data.RegistryBytes = registry;
             try { data.Registry = FollowerRegistry.Decode(registry); }
             catch (Exception ex)
             {
@@ -118,7 +121,7 @@ namespace NewEditor.Data
             Gifts = rules.Select(r => r.Copy()).ToList();
         }
 
-        void WriteFile(string path, byte[] bytes)
+        internal void WriteFile(string path, byte[] bytes)
         {
             if (!fileSystem.fnt.reverseFileNames.TryGetValue(path, out int id))
                 throw new InvalidOperationException(path + " is missing from this ROM; it can't be added without reinstalling the follower runtime.");
@@ -133,14 +136,22 @@ namespace NewEditor.Data
         /// </summary>
         void UpdateReceipt(string field, byte[] bytes)
         {
+            string hash;
+            using (SHA256 sha = SHA256.Create()) hash = BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+            UpdateReceiptValue(new Regex("(\"" + field + "\"\\s*:\\s*\")[0-9a-f]*(\")"), hash);
+        }
+
+        /// <summary>A number field such as configCrc32.</summary>
+        void UpdateReceiptNumber(string field, uint value) =>
+            UpdateReceiptValue(new Regex("(\"" + field + "\"\\s*:\\s*)[0-9]+()"), value.ToString());
+
+        void UpdateReceiptValue(Regex pattern, string value)
+        {
             byte[] receipt = ReadFile(fileSystem, InstallPath);
             if (receipt == null) return;
             string text = Encoding.UTF8.GetString(receipt);
-            string hash;
-            using (SHA256 sha = SHA256.Create()) hash = BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
-            var pattern = new Regex("(\"" + field + "\"\\s*:\\s*\")[0-9a-f]*(\")");
             if (!pattern.IsMatch(text)) return;
-            WriteFile(InstallPath, Encoding.UTF8.GetBytes(pattern.Replace(text, "${1}" + hash + "${2}", 1)));
+            WriteFile(InstallPath, Encoding.UTF8.GetBytes(pattern.Replace(text, "${1}" + value + "${2}", 1)));
         }
 
         /// <summary>A follower sprite (BTX) from a/0/4/8, or null.</summary>
@@ -227,7 +238,10 @@ namespace NewEditor.Data
         public bool Shiny, Asymmetric, Placeholder;
         /// <summary>Draw-only sprite offsets; Y is the per-Pokémon height.</summary>
         public int OffsetX, OffsetY, OffsetZ;
+        /// <summary>Where this appearance's record starts in the registry bytes.</summary>
+        public int RecordOffset;
         public string Key => Species + ":" + Form + ":" + Gender + ":" + (Shiny ? 1 : 0);
+        public FollowerAppearance Copy() => (FollowerAppearance)MemberwiseClone();
         public static readonly string[] GenderNames = { "male", "female", "genderless" };
     }
 
@@ -263,7 +277,7 @@ namespace NewEditor.Data
             for (int i = 0; i < count; i++)
             {
                 int at = 32 + i * stride;
-                var e = new FollowerAppearance();
+                var e = new FollowerAppearance { RecordOffset = at };
                 if (compact)
                 {
                     uint packed = FollowingData.ReadU32(b, at);
@@ -628,7 +642,7 @@ namespace NewEditor.Data
     /// linearly. Asymmetric sheets have 8 frames (up, down, left, right × idle,
     /// step); mirrored ones have 6 and draw right as a flipped left.
     /// </summary>
-    public static class FollowerSprites
+    public static partial class FollowerSprites
     {
         public static readonly string[] Directions = { "up", "down", "left", "right" };
 
