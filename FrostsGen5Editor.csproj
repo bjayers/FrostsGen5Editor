@@ -124,6 +124,7 @@
     <Compile Include="Data\FileFunctions.cs" />
     <Compile Include="Data\FileNameTable.cs" />
     <Compile Include="Data\FollowingAppearances.cs" />
+    <Compile Include="Data\FollowingZones.cs" />
     <Compile Include="Data\FollowingData.cs" />
     <Compile Include="Data\Gen4UnicodeTable.cs" />
     <Compile Include="Data\HelperFunctions.cs" />

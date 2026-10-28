@@ -217,15 +217,21 @@ namespace NewEditor.Forms
         }
 
         /// <summary>
-        /// Build the loaded ROM and write it to path. The ROM is built in full
-        /// before the file is touched, then written to a temporary file that
-        /// replaces path, so a failure leaves any existing file as it was. When
-        /// the DSi data can't be kept, asks whether to restore it from a clean
+        /// Build the loaded ROM and write it to path, first offering to save any
+        /// unsaved Following Pokémon edits. The ROM is built in full before the
+        /// file is touched, then written to a temporary file that replaces path,
+        /// so a failure leaves any existing file as it was. When the DSi data can't be kept, asks whether to restore it from a clean
         /// ROM, save for DS mode only, or cancel. Returns false if cancelled;
         /// throws if building or writing fails.
         /// </summary>
         public static bool SaveRomTo(string path)
         {
+            if (followingEditor != null && !followingEditor.IsDisposed && followingEditor.HasUnsavedChanges)
+            {
+                followingEditor.Show();
+                followingEditor.BringToFront();
+                if (!followingEditor.ResolveUnsaved("saving the ROM")) return false;
+            }
             byte[] data = fileSystem.BuildRom();
             while (fileSystem.DsiProblem != null)
             {

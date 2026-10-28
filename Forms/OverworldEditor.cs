@@ -85,6 +85,92 @@ namespace NewEditor.Forms
             AttachSpritePreview();
             SetupProxyEditor();
             SetupRailButtons();
+            SetupFollowerZone();
+        }
+
+        Panel followerZonePanel;
+        RadioButton followerDefaultButton, followerInteriorButton, followerExteriorButton;
+        ToolTip followerZoneTip;
+        bool syncingFollowerZone;
+
+        /// <summary>
+        /// Whether large followers may walk in this zone. The runtime stores a
+        /// swap of the area's indoor/outdoor flag, so the choice is shown and
+        /// saved as the result, against the area ID in the header.
+        /// </summary>
+        void SetupFollowerZone()
+        {
+            followerZonePanel = new Panel { Location = new Point(480, 18), Size = new Size(410, 28) };
+            var label = new Label { Text = "Followers:", Location = new Point(0, 6), AutoSize = true };
+            followerDefaultButton = new RadioButton { Text = "Default", Location = new Point(72, 4), AutoSize = true };
+            followerInteriorButton = new RadioButton { Text = "Interior", Location = new Point(212, 4), AutoSize = true };
+            followerExteriorButton = new RadioButton { Text = "Exterior", Location = new Point(300, 4), AutoSize = true };
+            followerZonePanel.Controls.AddRange(new Control[] { label, followerDefaultButton, followerInteriorButton, followerExteriorButton });
+            Controls.Add(followerZonePanel);
+            followerZonePanel.BringToFront();
+
+            followerZoneTip = new ToolTip();
+            followerZoneTip.SetToolTip(followerDefaultButton, "Use the area's own indoor/outdoor setting.");
+            followerZoneTip.SetToolTip(followerInteriorButton, "Treat this zone as indoors: large followers go back in their Poké Ball.");
+            followerZoneTip.SetToolTip(followerExteriorButton, "Treat this zone as outdoors: large followers may walk here.");
+            textureNumberBox.ValueChanged += (s, e) => { if (!syncingFollowerZone) ShowFollowerDefault(); };
+            followerZonePanel.Enabled = false;
+        }
+
+        /// <summary>The follower data, read fresh, or null without the runtime or its positioning file.</summary>
+        static FollowingData LoadFollowing()
+        {
+            FollowingData data = MainEditor.fileSystem == null ? null : FollowingData.Load(MainEditor.fileSystem);
+            return data?.Positioning == null ? null : data;
+        }
+
+        void ShowFollowerDefault()
+        {
+            FollowingData data = followerZonePanel.Enabled ? LoadFollowing() : null;
+            bool? exterior = data?.AreaIsExterior((int)textureNumberBox.Value);
+            followerDefaultButton.Text = exterior == null ? "Default" : "Default (" + (exterior.Value ? "exterior" : "interior") + ")";
+        }
+
+        void LoadFollowerZone(ZoneDataEntry z)
+        {
+            FollowingData data = LoadFollowing();
+            bool? exterior = data?.AreaIsExterior(z.texture);
+            syncingFollowerZone = true;
+            followerZonePanel.Enabled = exterior != null;
+            if (exterior == null)
+            {
+                followerDefaultButton.Checked = true;
+                followerZoneTip.SetToolTip(followerZonePanel, data == null ? "The Following Pokémon runtime isn't installed in this ROM." : "This zone's area record couldn't be read.");
+            }
+            else
+            {
+                bool swapped = (data.ZoneFlags(z.index) & FollowingData.ZoneLargeSwap) != 0;
+                bool effective = exterior.Value != swapped;
+                (swapped ? (effective ? followerExteriorButton : followerInteriorButton) : followerDefaultButton).Checked = true;
+            }
+            ShowFollowerDefault();
+            syncingFollowerZone = false;
+        }
+
+        /// <summary>Save the follower choice for the zone; returns a note for the status bar, or null.</summary>
+        string ApplyFollowerZone(ZoneDataEntry z)
+        {
+            if (!followerZonePanel.Enabled) return null;
+            FollowingData data = LoadFollowing();
+            bool? exterior = data?.AreaIsExterior(z.texture);
+            if (exterior == null) return null;
+            bool swap = followerInteriorButton.Checked ? exterior.Value : followerExteriorButton.Checked ? !exterior.Value : false;
+            if (swap == ((data.ZoneFlags(z.index) & FollowingData.ZoneLargeSwap) != 0)) return null;
+            try
+            {
+                data.SetZoneSwap(z.index, swap);
+                return "follower zone override " + (swap ? "set" : "cleared");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("The follower zone override wasn't saved: " + ex.Message, "Following Pokémon", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return null;
+            }
         }
 
         NumericUpDown railHeightBox;
@@ -636,6 +722,7 @@ namespace NewEditor.Forms
                 challengeLevelNumberBox.Value = z.difficultyLevelChange;
                 flyXNumberBox.Value = z.flyX;
                 flyYNumberBox.Value = z.flyZ;
+                LoadFollowerZone(z);
 
                 mapTypeNumberBox.Enabled = true;
                 mapMatrixNumberBox.Enabled = true;
@@ -797,8 +884,9 @@ namespace NewEditor.Forms
                 z.flyZ = (int)flyYNumberBox.Value;
 
                 z.ApplyData();
+                string followerNote = ApplyFollowerZone(z);
 
-                statusText.Text = "Saved overworld header data - " + DateTime.Now.StatusText();
+                statusText.Text = "Saved overworld header data" + (followerNote == null ? "" : " and " + followerNote) + " - " + DateTime.Now.StatusText();
             }
         }
 

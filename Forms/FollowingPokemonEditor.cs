@@ -78,21 +78,7 @@ namespace NewEditor.Forms
             FormClosing += (s, e) =>
             {
                 if (e.CloseReason == CloseReason.ApplicationExitCall) return;
-                foreach (RuleView view in new[] { dialogueView, giftView })
-                {
-                    if (!view.Dirty) continue;
-                    tabs.SelectedTab = view.Page;
-                    DialogResult answer = MessageBox.Show("Save the changes to " + view.Noun + " before closing?", "Following Pokémon",
-                        MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
-                    if (answer == DialogResult.Cancel || (answer == DialogResult.Yes && !view.Save())) { e.Cancel = true; return; }
-                }
-                if (appearancesDirty)
-                {
-                    tabs.SelectedTab = appearanceTab;
-                    DialogResult answer = MessageBox.Show("Save the changes to appearances before closing?", "Following Pokémon",
-                        MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
-                    if (answer == DialogResult.Cancel || (answer == DialogResult.Yes && !SaveAppearances())) e.Cancel = true;
-                }
+                if (!ResolveUnsaved("closing")) e.Cancel = true;
             };
             FormClosed += (s, e) =>
             {
@@ -100,6 +86,33 @@ namespace NewEditor.Forms
                 foreach (Bitmap b in thumbnails.Values) b?.Dispose();
                 DisposeFrames();
             };
+        }
+
+        public bool HasUnsavedChanges => dialogueView.Dirty || giftView.Dirty || appearancesDirty;
+
+        /// <summary>
+        /// Ask about each tab with unsaved changes: Yes saves it, No leaves it
+        /// unsaved, Cancel stops. False when the caller should stop, after a
+        /// Cancel or a save that failed.
+        /// </summary>
+        public bool ResolveUnsaved(string beforeWhat)
+        {
+            foreach (RuleView view in new[] { dialogueView, giftView })
+            {
+                if (!view.Dirty) continue;
+                tabs.SelectedTab = view.Page;
+                DialogResult answer = MessageBox.Show("Save the changes to " + view.Noun + " before " + beforeWhat + "?", "Following Pokémon",
+                    MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+                if (answer == DialogResult.Cancel || (answer == DialogResult.Yes && !view.Save())) return false;
+            }
+            if (appearancesDirty)
+            {
+                tabs.SelectedTab = appearanceTab;
+                DialogResult answer = MessageBox.Show("Save the changes to appearances before " + beforeWhat + "?", "Following Pokémon",
+                    MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+                if (answer == DialogResult.Cancel || (answer == DialogResult.Yes && !SaveAppearances())) return false;
+            }
+            return true;
         }
 
         // ---------------------------------------------------------------- Names
