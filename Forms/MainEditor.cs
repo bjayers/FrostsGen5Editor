@@ -110,6 +110,7 @@ namespace NewEditor.Forms
         public static RandomMovesEditor presetMovesEditor;
         public static PokemartEditor pokemartEditor;
         public static GrottoEditor grottoEditor;
+        public static FollowingPokemonEditor followingEditor;
         public static ExpCurveEditor xpCurveEditor;
         public static OverlayEditor overlayEditor;
         public static TypeChartEditor typeChartEditor;
@@ -588,6 +589,7 @@ namespace NewEditor.Forms
             if (trainerEditor != null && !trainerEditor.IsDisposed) trainerEditor.Close();
             if (pokemartEditor != null && !pokemartEditor.IsDisposed) pokemartEditor.Close();
             if (grottoEditor != null && !grottoEditor.IsDisposed) grottoEditor.Close();
+            if (followingEditor != null && !followingEditor.IsDisposed) followingEditor.Close();
             if (overlayEditor != null && !overlayEditor.IsDisposed) overlayEditor.Close();
             if (typeSwapEditor != null && !typeSwapEditor.IsDisposed) typeSwapEditor.Close();
             if (presetMovesEditor != null && !presetMovesEditor.IsDisposed) presetMovesEditor.Close();
@@ -893,6 +895,33 @@ namespace NewEditor.Forms
             ChangeTheme(null, null);
             grottoEditor.Show();
             grottoEditor.BringToFront();
+        }
+
+        private void OpenFollowingEditor(object sender, EventArgs e)
+        {
+            if (RomType != RomType.BW2)
+            {
+                MessageBox.Show("Only available for Black 2 and White 2 roms");
+                return;
+            }
+            if (fileSystem == null || textNarc == null || loadingNARCS)
+            {
+                MessageBox.Show("Rom data has not finished loading");
+                return;
+            }
+            if (followingEditor == null || followingEditor.IsDisposed)
+            {
+                FollowingData data = FollowingData.Load(fileSystem);
+                if (data == null)
+                {
+                    MessageBox.Show("The Following Pokémon runtime isn't installed in this rom.");
+                    return;
+                }
+                followingEditor = new FollowingPokemonEditor(data);
+            }
+            ChangeTheme(null, null);
+            followingEditor.Show();
+            followingEditor.BringToFront();
         }
 
         private void OpenShopEditor(object sender, EventArgs e)

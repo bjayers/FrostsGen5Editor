@@ -78,6 +78,7 @@ namespace NewEditor.Forms
             this.pokedexToolsButton = new System.Windows.Forms.Button();
             this.OpenFileExplorerButton = new System.Windows.Forms.Button();
             this.openGrottoEditorButton = new System.Windows.Forms.Button();
+            this.openFollowingEditorButton = new System.Windows.Forms.Button();
             this.openXPCurveEditorButton = new System.Windows.Forms.Button();
             this.groupBox4 = new System.Windows.Forms.GroupBox();
             this.replaceMapID = new System.Windows.Forms.NumericUpDown();
@@ -562,6 +563,7 @@ namespace NewEditor.Forms
             this.groupBox3.Controls.Add(this.pokedexToolsButton);
             this.groupBox3.Controls.Add(this.OpenFileExplorerButton);
             this.groupBox3.Controls.Add(this.openGrottoEditorButton);
+            this.groupBox3.Controls.Add(this.openFollowingEditorButton);
             this.groupBox3.Controls.Add(this.openXPCurveEditorButton);
             this.groupBox3.Controls.Add(this.openTextViewerButton);
             this.groupBox3.Controls.Add(this.openPokemonEditorButton);
@@ -573,7 +575,7 @@ namespace NewEditor.Forms
             this.groupBox3.Controls.Add(this.openShopEditorButton);
             this.groupBox3.Location = new System.Drawing.Point(12, 304);
             this.groupBox3.Name = "groupBox3";
-            this.groupBox3.Size = new System.Drawing.Size(394, 185);
+            this.groupBox3.Size = new System.Drawing.Size(394, 225);
             this.groupBox3.TabIndex = 41;
             this.groupBox3.TabStop = false;
             this.groupBox3.Text = "Editors";
@@ -597,6 +599,16 @@ namespace NewEditor.Forms
             this.OpenFileExplorerButton.Text = "File Explorer";
             this.OpenFileExplorerButton.UseVisualStyleBackColor = true;
             this.OpenFileExplorerButton.Click += new System.EventHandler(this.OpenFileExplorer);
+            // 
+            // openFollowingEditorButton
+            // 
+            this.openFollowingEditorButton.Location = new System.Drawing.Point(10, 175);
+            this.openFollowingEditorButton.Name = "openFollowingEditorButton";
+            this.openFollowingEditorButton.Size = new System.Drawing.Size(120, 32);
+            this.openFollowingEditorButton.TabIndex = 29;
+            this.openFollowingEditorButton.Text = "Following Pokémon";
+            this.openFollowingEditorButton.UseVisualStyleBackColor = true;
+            this.openFollowingEditorButton.Click += new System.EventHandler(this.OpenFollowingEditor);
             // 
             // openGrottoEditorButton
             // 
@@ -694,7 +706,7 @@ namespace NewEditor.Forms
             // statusText
             // 
             this.statusText.AutoSize = true;
-            this.statusText.Location = new System.Drawing.Point(9, 496);
+            this.statusText.Location = new System.Drawing.Point(9, 536);
             this.statusText.Name = "statusText";
             this.statusText.Size = new System.Drawing.Size(113, 16);
             this.statusText.TabIndex = 44;
@@ -705,7 +717,7 @@ namespace NewEditor.Forms
             this.AutoScaleDimensions = new System.Drawing.SizeF(7F, 16F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.AutoScroll = true;
-            this.ClientSize = new System.Drawing.Size(784, 521);
+            this.ClientSize = new System.Drawing.Size(784, 561);
             this.Controls.Add(this.statusText);
             this.Controls.Add(this.themeDropdown);
             this.Controls.Add(this.label1);
@@ -792,6 +804,7 @@ namespace NewEditor.Forms
         private System.Windows.Forms.Button littleCupButton;
         private System.Windows.Forms.Button openXPCurveEditorButton;
         private System.Windows.Forms.Button openGrottoEditorButton;
+        private System.Windows.Forms.Button openFollowingEditorButton;
         private System.Windows.Forms.Label label1;
         private System.Windows.Forms.ComboBox themeDropdown;
         private System.Windows.Forms.Button OpenFileExplorerButton;

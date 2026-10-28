@@ -113,6 +113,7 @@
     <Compile Include="Data\Key1.cs" />
     <Compile Include="Data\FileFunctions.cs" />
     <Compile Include="Data\FileNameTable.cs" />
+    <Compile Include="Data\FollowingData.cs" />
     <Compile Include="Data\Gen4UnicodeTable.cs" />
     <Compile Include="Data\HelperFunctions.cs" />
     <Compile Include="Data\NARCTypes\ChildPokemonNARC.cs" />
@@ -202,6 +203,9 @@
     </Compile>
     <Compile Include="Forms\GrottoEditor.Designer.cs">
       <DependentUpon>GrottoEditor.cs</DependentUpon>
+    </Compile>
+    <Compile Include="Forms\FollowingPokemonEditor.cs">
+      <SubType>Form</SubType>
     </Compile>
     <Compile Include="Forms\FileExplorer.cs">
       <SubType>Form</SubType>
